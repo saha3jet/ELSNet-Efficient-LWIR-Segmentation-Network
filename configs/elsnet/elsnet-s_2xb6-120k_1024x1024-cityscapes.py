@@ -70,6 +70,7 @@ model = dict(
         norm_cfg=norm_cfg,
         act_cfg=dict(type="ReLU", inplace=True),
         align_corners=True,
+        bas_threshold=0.8,
         loss_decode=[
             dict(
                 type="CrossEntropyLoss",
@@ -86,15 +87,22 @@ model = dict(
             ),
             dict(type="BoundaryLoss", loss_weight=20.0),
             dict(
-                type="BoundarySemanticLoss",
-                threshold=0.8,
+                type="OhemCrossEntropy",
+                thres=0.9,
+                min_kept=131072,
+                class_weight=class_weight,
                 loss_weight=1.0,
-                ignore_index=255,
             ),
         ],
     ),
     loss_imse=dict(
-        type="IMSELoss", inverse=True, eps=1e-6, reduction="mean", loss_weight=0.1
+        type="IMSELoss",
+        inverse=True,
+        per_channel=True,
+        inverse_transform="log1p",
+        eps=1e-6,
+        reduction="mean",
+        loss_weight=0.1,
     ),
     train_cfg=dict(),
     test_cfg=dict(mode="whole"),

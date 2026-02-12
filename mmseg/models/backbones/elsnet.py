@@ -145,7 +145,7 @@ class SDM(BaseModule):
             in_ch = out_ch
         self.conv_stack = nn.Sequential(*layers)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward_with_wave(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         h, w = x.shape[-2:]
         pad_h = h % 2
         pad_w = w % 2
@@ -158,6 +158,11 @@ class SDM(BaseModule):
 
         if pad_h or pad_w:
             x_d = x_d[..., :h, :w]
+
+        return x_d, w_d
+
+    def forward(self, x: Tensor) -> Tensor:
+        x_d, _ = self.forward_with_wave(x)
 
         return x_d
 
@@ -531,3 +536,6 @@ class ELSNet(PIDNet):
     def forward(self, x: Tensor) -> Union[Tensor, Tuple[Tensor]]:
         x_d = self.sdm(x)
         return self.forward_from_denoised(x_d)
+
+    def denoise_with_wave(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        return self.sdm.forward_with_wave(x)

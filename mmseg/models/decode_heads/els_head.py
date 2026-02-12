@@ -54,6 +54,7 @@ class ELSHead(BaseDecodeHead):
         num_classes: int,
         norm_cfg: OptConfigType = dict(type="BN"),
         act_cfg: OptConfigType = dict(type="ReLU", inplace=True),
+        bas_threshold: float = 0.8,
         **kwargs,
     ):
         super().__init__(
@@ -69,6 +70,7 @@ class ELSHead(BaseDecodeHead):
         self.d_head = BaseELSHead(in_channels // 2, in_channels // 4, norm_cfg)
         self.p_cls_seg = nn.Conv2d(channels, self.out_channels, kernel_size=1)
         self.d_cls_seg = nn.Conv2d(in_channels // 4, 1, kernel_size=1)
+        self.bas_threshold = bas_threshold
 
     def init_weights(self):
         for m in self.modules():
@@ -133,8 +135,12 @@ class ELSHead(BaseDecodeHead):
         loss["loss_bd"] = self.loss_decode[2](d_logit, bd_label)
         filler = torch.ones_like(sem_label) * self.ignore_index
         sem_bd_label = torch.where(
-            torch.sigmoid(d_logit[:, 0, :, :]) > 0.8, sem_label, filler
+            torch.sigmoid(d_logit[:, 0, :, :]) > self.bas_threshold, sem_label, filler
         )
-        loss["loss_sem_bd"] = self.loss_decode[3](i_logit, sem_bd_label)
+        bas_loss_module = self.loss_decode[3]
+        if bas_loss_module.__class__.__name__ == "BoundarySemanticLoss":
+            loss["loss_sem_bd"] = bas_loss_module(i_logit, sem_label, d_logit)
+        else:
+            loss["loss_sem_bd"] = bas_loss_module(i_logit, sem_bd_label)
         loss["acc_seg"] = accuracy(i_logit, sem_label, ignore_index=self.ignore_index)
         return loss

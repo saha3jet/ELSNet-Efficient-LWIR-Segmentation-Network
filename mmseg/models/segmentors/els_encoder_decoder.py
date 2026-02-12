@@ -50,7 +50,11 @@ class ELSEncoderDecoder(EncoderDecoder):
             and hasattr(self.backbone, "sdm")
             and hasattr(self.backbone, "forward_from_denoised")
         ):
-            x_d = self.backbone.sdm(inputs)
+            if hasattr(self.backbone, "denoise_with_wave"):
+                x_d, w_d = self.backbone.denoise_with_wave(inputs)
+            else:
+                x_d = self.backbone.sdm(inputs)
+                w_d = None
             if hasattr(self.backbone, "generate_nns"):
                 x_n = self.backbone.generate_nns(inputs)
             else:
@@ -60,7 +64,7 @@ class ELSEncoderDecoder(EncoderDecoder):
             if self.with_neck:
                 x = self.neck(x)
 
-            losses["loss_imse"] = self.loss_imse(x_d, x_n)
+            losses["loss_imse"] = self.loss_imse(x_d, x_n, w_d=w_d)
         else:
             x = self.extract_feat(inputs)
 

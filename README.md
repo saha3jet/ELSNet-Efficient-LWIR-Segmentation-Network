@@ -22,12 +22,15 @@ Codebase note: this project is built on top of the MMSegmentation framework, but
   - `forward_from_denoised()` for training orchestration.
 - Decode head: `mmseg/models/decode_heads/els_head.py`
   - PID-style multi-branch output flow with ELS naming.
+  - BAS threshold is configurable via `bas_threshold`.
 - Segmentor: `mmseg/models/segmentors/els_encoder_decoder.py`
   - Extends EncoderDecoder and adds `loss_imse` orchestration.
+  - Reuses optional wavelet coefficients from backbone when available.
 - Losses: `mmseg/models/losses/lwir_losses.py`
   - `IMSELoss` (supports inverse wavelet-domain mode).
+  - `IMSELoss` options: `per_channel`, `inverse_transform`, `inverse_clip_max`.
   - `LowSemanticLoss`.
-  - `BoundarySemanticLoss`.
+  - `BoundarySemanticLoss` (`hard` and `soft` modes).
 - Registry wiring completed:
   - `mmseg/models/backbones/__init__.py`
   - `mmseg/models/decode_heads/__init__.py`
@@ -59,6 +62,7 @@ Codebase note: this project is built on top of the MMSegmentation framework, but
   - ELSHead outputs `p_logit`, `i_logit`, `d_logit` during training.
 - Segmentor-level loss orchestration:
   - ELSEncoderDecoder computes decode losses and additional `loss_imse`.
+  - If available, `denoise_with_wave()` is used to avoid recomputing wavelet features for iMSE.
 
 ## Loss Composition
 
@@ -75,6 +79,8 @@ Codebase note: this project is built on top of the MMSegmentation framework, but
 - `L_iMSE = 1 / (MSE(W_d, W_n) + eps)`
 
 where `W_d` and `W_n` are Haar-wavelet coefficients of denoised and NNS samples.
+
+Current default config uses OHEM for BAS-equivalent supervision in the 4th decode loss slot (same pattern as PID config family).
 
 ## Quick Start
 
