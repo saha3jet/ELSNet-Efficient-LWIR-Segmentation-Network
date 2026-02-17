@@ -4,7 +4,6 @@ from .bisenetv1 import BiSeNetV1
 from .bisenetv2 import BiSeNetV2
 from .cgnet import CGNet
 from .ddrnet import DDRNet
-from .elsnet import ELSNet
 from .erfnet import ERFNet
 from .fast_scnn import FastSCNN
 from .hrnet import HRNet
@@ -25,6 +24,7 @@ from .twins import PCPVT, SVT
 from .unet import UNet
 from .vit import VisionTransformer
 from .vpd import VPD
+from .elsnet import ELSNet
 
 __all__ = [
     "ResNet",

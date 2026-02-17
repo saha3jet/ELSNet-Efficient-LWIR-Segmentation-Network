@@ -61,14 +61,49 @@ def cross_entropy(pred,
             else:
                 avg_factor = label.numel()
 
-        else:
-            # the average factor should take the class weights into account
-            label_weights = torch.stack([class_weight[cls] for cls in label
-                                         ]).to(device=class_weight.device)
+        # else:
+        #     # the average factor should take the class weights into account
+        #     label_weights = torch.stack([class_weight[cls] for cls in label
+        #                                  ]).to(device=class_weight.device)
 
-            if avg_non_ignore:
-                label_weights[label == ignore_index] = 0
-            avg_factor = label_weights.sum()
+        #     if avg_non_ignore:
+        #         label_weights[label == ignore_index] = 0
+        #     avg_factor = label_weights.sum()
+        # 교체할 코드 (ignore_index 안전 처리)
+        # else:
+        #     label_long = label.long()
+        #     ignore = (label_long == ignore_index)
+
+        #     # (선택) non-ignore 라벨이 [0, C-1] 범위를 벗어나면 CUDA assert 대신
+        #     # Python 예외로 빠르게 원인을 드러내기
+        #     if torch.any(~ignore):
+        #         min_label = label_long[~ignore].amin()
+        #         max_label = label_long[~ignore].amax()
+        #         num_classes = int(class_weight.numel())
+        #         if (min_label < 0) or (max_label >= num_classes):
+        #             raise ValueError(
+        #                 'Invalid label value in cross_entropy(): '
+        #                 f'min={int(min_label.item())}, max={int(max_label.item())}, '
+        #                 f'num_classes={num_classes}, ignore_index={ignore_index}. '
+        #                 'Check dataset conversion / reduce_zero_label / label_map / seg_pad_val.'
+        #             )
+
+        #     # ignore 위치는 임의의 유효 클래스(여기선 0)로 치환 후 인덱싱
+        #     safe_label = label_long.clone()
+        #     safe_label[ignore] = 0
+
+        #     # class_weight[safe_label]은 label마다 해당 weight를 가져옴 (shape은 label과 동일)
+        #     label_weights = class_weight[safe_label].to(device=class_weight.device)
+
+        #     if avg_non_ignore:
+        #         # PyTorch cross_entropy(mean)처럼 ignore는 분모에서 제외
+        #         label_weights[ignore] = 0
+        #     else:
+        #         # mmseg legacy 의미( ignore도 avg_factor에 포함 )를 유지하려면
+        #         # ignore 위치는 "1"로 카운트
+        #         label_weights[ignore] = 1.0
+
+        #     avg_factor = label_weights.sum()
 
     if weight is not None:
         weight = weight.float()
