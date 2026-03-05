@@ -37,8 +37,9 @@ model = dict(
             amplitude=0.15,
             freq_min=2.0,
             freq_max=12.0,
-            direction="both",
-        ),
+            direction="both",),
+        use_sdm_teacher=True,
+        sdm_teacher_momentum=0.999,
     ),
     decode_head=dict(
         type="ELSHead",
@@ -73,14 +74,21 @@ model = dict(
             ),
         ],
     ),
+    # loss_imse=dict(
+    #     type="IMSELoss",
+    #     inverse=True,
+    #     per_channel=True,
+    #     inverse_transform="log1p",
+    #     eps=1e-6,
+    #     reduction="mean",
+    #     loss_weight=0.1,
+    # ),
     loss_imse=dict(
-        type="IMSELoss",
-        inverse=True,
-        per_channel=True,
-        inverse_transform="log1p",
-        eps=1e-6,
-        reduction="mean",
-        loss_weight=0.1,
+    type="SoftContrastiveWaveletLoss",
+    eps=1e-3,
+    use_hf_only=True,
+    reduction="mean",
+    loss_weight=0.1,
     ),
     train_cfg=dict(),
     test_cfg=dict(mode="whole"),
@@ -106,5 +114,14 @@ default_hooks = dict(
     sampler_seed=dict(type="DistSamplerSeedHook"),
     visualization=dict(type="SegVisualizationHook"),
 )
+
+custom_hooks = [
+    dict(
+        type="SDMTeacherEMAHook",
+        momentum=0.999,
+        update_buffers=True,   # BN running stats까지 EMA로 할지(권장 True)
+        priority="NORMAL",
+    )
+]
 
 randomness = dict(seed=304)

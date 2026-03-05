@@ -1,65 +1,48 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-from typing import Optional, Dict, Any
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
+from typing import Optional
 
 from mmseg.registry import MODELS
 from .utils import weight_reduce_loss
 
-from pytorch_wavelets import DWTForward
 
+def _haar_dwt(x: Tensor) -> Tensor:
+    x_even_row = x[:, :, 0::2, :]
+    x_odd_row = x[:, :, 1::2, :]
 
-def _pack_wavelet(yl: Tensor, yh0: Tensor) -> Tensor:
-    """Pack (yl, yh0) from pytorch_wavelets into a (B, 4C, H', W') tensor.
+    ll = (
+        x_even_row[:, :, :, 0::2]
+        + x_odd_row[:, :, :, 0::2]
+        + x_even_row[:, :, :, 1::2]
+        + x_odd_row[:, :, :, 1::2]
+    ) * 0.5
+    lh = (
+        x_even_row[:, :, :, 0::2]
+        + x_odd_row[:, :, :, 0::2]
+        - x_even_row[:, :, :, 1::2]
+        - x_odd_row[:, :, :, 1::2]
+    ) * 0.5
+    hl = (
+        x_even_row[:, :, :, 0::2]
+        - x_odd_row[:, :, :, 0::2]
+        + x_even_row[:, :, :, 1::2]
+        - x_odd_row[:, :, :, 1::2]
+    ) * 0.5
+    hh = (
+        x_even_row[:, :, :, 0::2]
+        - x_odd_row[:, :, :, 0::2]
+        - x_even_row[:, :, :, 1::2]
+        + x_odd_row[:, :, :, 1::2]
+    ) * 0.5
 
-    yl:  (B, C,  H', W')  -> LL
-    yh0: (B, C, 3, H', W') -> (LH, HL, HH) along dim=2
-    """
-    ll = yl
-    lh = yh0[:, :, 0]
-    hl = yh0[:, :, 1]
-    hh = yh0[:, :, 2]
     return torch.cat([ll, lh, hl, hh], dim=1)
-
-
-def _dwt_pack(
-    x: Tensor,
-    dwt: DWTForward,
-    pad_mode: str = "replicate",
-) -> Tensor:
-    """Apply 1-level DWT (db1/reflect recommended) and pack into (B, 4C, H', W').
-
-    Notes
-    -----
-    - For odd H/W, we pad bottom/right by 1px using pad_mode (default: replicate),
-      consistent with SDM.forward_with_wave in elsnet.py.
-    """
-    h, w = x.shape[-2:]
-    pad_h = h % 2
-    pad_w = w % 2
-    if pad_h or pad_w:
-        x = F.pad(x, (0, pad_w, 0, pad_h), mode=pad_mode)
-
-    yl, yh = dwt(x)  # yh is a list (len=J=1)
-    yh0 = yh[0]
-    return _pack_wavelet(yl, yh0)
 
 
 @MODELS.register_module()
 class IMSELoss(nn.Module):
-    """Inverse-MSE loss in wavelet domain (LiMSE).
-
-    This implementation is aligned with SDM:
-      - pytorch_wavelets DWTForward
-      - wave=db1 (Haar), mode=reflect
-      - pad_mode=replicate for odd H/W
-
-    Signature kept compatible with existing ELSEncoderDecoder.loss usage.
-    """
-
     def __init__(
         self,
         inverse: bool = True,
@@ -70,10 +53,6 @@ class IMSELoss(nn.Module):
         reduction: str = "mean",
         loss_weight: float = 1.0,
         loss_name: str = "loss_imse",
-        # wavelet settings (should match SDM)
-        wave: str = "db1",
-        mode: str = "reflect",
-        pad_mode: str = "replicate",
     ):
         super().__init__()
         self.inverse = inverse
@@ -84,9 +63,6 @@ class IMSELoss(nn.Module):
         self.reduction = reduction
         self.loss_weight = loss_weight
         self.loss_name_ = loss_name
-
-        self.pad_mode = pad_mode
-        self.dwt = DWTForward(J=1, wave=wave, mode=mode)
 
     def forward(
         self,
@@ -100,23 +76,24 @@ class IMSELoss(nn.Module):
         **kwargs,
     ) -> Tensor:
         reduction = reduction_override if reduction_override else self.reduction
-
         if self.inverse:
-            # w_d: wavelet-domain output of SDM(x)
-            # w_n: wavelet-domain transform of NNS(x) or other negative sample
             if w_d is None or w_n is None:
-                w_d = _dwt_pack(x_d, self.dwt, pad_mode=self.pad_mode)
-                w_n = _dwt_pack(x, self.dwt, pad_mode=self.pad_mode)
+                h, w = x_d.shape[-2:]
+                pad_h = h % 2
+                pad_w = w % 2
+                if pad_h or pad_w:
+                    x_d = F.pad(x_d, (0, pad_w, 0, pad_h), mode="replicate")
+                    x = F.pad(x, (0, pad_w, 0, pad_h), mode="replicate")
+                w_d = _haar_dwt(x_d)
+                w_n = _haar_dwt(x)
 
             mse = F.mse_loss(w_d, w_n, reduction="none")
             if self.per_channel:
-                # (B, C, H', W') -> (B, C)
                 mse = mse.flatten(2).mean(dim=2)
             else:
                 mse = mse.flatten(1).mean(dim=1, keepdim=True)
 
             inverse_mse = 1.0 / (mse + self.eps)
-
             if self.inverse_clip_max is not None:
                 inverse_mse = torch.clamp(inverse_mse, max=self.inverse_clip_max)
             if self.inverse_transform == "log1p":
@@ -125,110 +102,19 @@ class IMSELoss(nn.Module):
             if weight is not None:
                 weight = weight.float()
             loss = weight_reduce_loss(
-                inverse_mse, weight=weight, reduction=reduction, avg_factor=avg_factor
+                inverse_mse,
+                weight=weight,
+                reduction=reduction,
+                avg_factor=avg_factor,
             )
             return self.loss_weight * loss
 
-        # Plain MSE (fallback; not used for LiMSE)
         loss = F.mse_loss(x_d, x, reduction="none")
         if weight is not None:
             weight = weight.float()
-        loss = weight_reduce_loss(loss, weight=weight, reduction=reduction, avg_factor=avg_factor)
-        return self.loss_weight * loss
-
-    @property
-    def loss_name(self):
-        return self.loss_name_
-
-
-@MODELS.register_module()
-class SoftContrastiveWaveletLoss(nn.Module):
-    """Soft-contrastive loss in wavelet domain (Option 5-C).
-
-    Anchor:   W_dn  = SDM_student( x_n )  (wavelet-packed)
-    Positive: W_t   = SDM_teacher( x ) or stop-grad(SDM_student(x)) (wavelet-packed)
-    Negative: W_n   = DWT( x_n )          (wavelet-packed, raw)
-
-    Loss:
-        d_pos = Charbonnier( HF(W_dn), HF(W_t) )
-        d_neg = Charbonnier( HF(W_dn), HF(W_n) )
-        L = softplus( d_pos - d_neg )
-
-    Notes
-    -----
-    - Uses HF-only by default: (LH, HL, HH). LL is dropped.
-    - Charbonnier is used as a robust distance (less sensitive than MSE).
-    """
-
-    def __init__(
-        self,
-        eps: float = 1e-3,
-        use_hf_only: bool = True,
-        reduction: str = "mean",
-        rank_weight: float = 1.0, #
-        loss_weight: float = 1.0,
-        loss_name: str = "loss_scd",
-    ):
-        super().__init__()
-        self.eps = float(eps)
-        self.use_hf_only = bool(use_hf_only)
-        self.reduction = reduction
-        self.rank_weight = float(rank_weight) #
-        self.loss_weight = float(loss_weight)
-        self.loss_name_ = loss_name
-
-    def _select_hf(self, w: Tensor) -> Tensor:
-        if not self.use_hf_only:
-            return w
-        c4 = w.shape[1]
-        assert c4 % 4 == 0, f"Expected packed wavelet with 4C channels, got {c4}"
-        c = c4 // 4
-        return w[:, c:, :, :]  # drop LL
-
-    def _charbonnier_dist(self, a: Tensor, b: Tensor) -> Tensor:
-        diff = a - b
-        d = torch.sqrt(diff * diff + (self.eps * self.eps))
-        # per-sample scalar distance
-        return d.flatten(1).mean(dim=1, keepdim=True)
-
-    def forward(
-        self,
-        # explicit tensors
-        w_dn: Optional[Tensor] = None,
-        w_t: Optional[Tensor] = None,
-        w_n: Optional[Tensor] = None,
-        # or dict carrier
-        denoise_aux: Optional[Dict[str, Any]] = None,
-        weight: Optional[Tensor] = None,
-        avg_factor: Optional[float] = None,
-        reduction_override: Optional[str] = None,
-        **kwargs,
-    ) -> Tensor:
-        reduction = reduction_override if reduction_override else self.reduction
-
-        if denoise_aux is not None:
-            w_dn = denoise_aux.get("w_dn", w_dn)
-            w_t = denoise_aux.get("w_t", w_t)
-            w_n = denoise_aux.get("w_n", w_n)
-
-        if w_dn is None or w_t is None or w_n is None:
-            raise ValueError(
-                "SoftContrastiveWaveletLoss requires (w_dn, w_t, w_n) or denoise_aux dict."
-            )
-
-        a = self._select_hf(w_dn)
-        p = self._select_hf(w_t)
-        n = self._select_hf(w_n)
-
-        d_pos = self._charbonnier_dist(a, p)
-        d_neg = self._charbonnier_dist(a, n)
-
-        # loss_vec = F.softplus(d_pos - d_neg)
-        loss_vec = d_pos + self.rank_weight * F.softplus(d_pos - d_neg)
-
-        if weight is not None:
-            weight = weight.float()
-        loss = weight_reduce_loss(loss_vec, weight=weight, reduction=reduction, avg_factor=avg_factor)
+        loss = weight_reduce_loss(
+            loss, weight=weight, reduction=reduction, avg_factor=avg_factor
+        )
         return self.loss_weight * loss
 
     @property

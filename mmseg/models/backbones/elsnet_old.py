@@ -7,64 +7,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from mmcv.cnn import ConvModule
 from mmengine.model import BaseModule
+from mmengine.runner import CheckpointLoader
 from torch import Tensor
 
 from mmseg.registry import MODELS
 from mmseg.utils import OptConfigType
-from .pidnet import PIDNet
 from pytorch_wavelets import DWTForward, DWTInverse
-
-
-# class SDM(BaseModule):
-#     def __init__(
-#         self,
-#         in_channels: int = 1,
-#         mid_channels: int = 64,
-#         num_layers: int = 3,
-#         norm_cfg: OptConfigType = dict(type="BN"),
-#         act_cfg: OptConfigType = dict(type="ReLU", inplace=True),
-#         init_cfg: OptConfigType = None,
-#     ):
-#         super().__init__(init_cfg)
-#         wavelet_channels = in_channels * 4
-#         layers = []
-#         in_ch = wavelet_channels
-#         for i in range(num_layers):
-#             out_ch = mid_channels if i < num_layers - 1 else wavelet_channels
-#             use_act = act_cfg if i < num_layers - 1 else None
-#             layers.append(
-#                 ConvModule(
-#                     in_ch,
-#                     out_ch,
-#                     kernel_size=3,
-#                     padding=1,
-#                     norm_cfg=norm_cfg,
-#                     act_cfg=use_act,
-#                 )
-#             )
-#             in_ch = out_ch
-#         self.conv_stack = nn.Sequential(*layers)
-
-#     def forward_with_wave(self, x: Tensor) -> Tuple[Tensor, Tensor]:
-#         h, w = x.shape[-2:]
-#         pad_h = h % 2
-#         pad_w = w % 2
-#         if pad_h or pad_w:
-#             x = F.pad(x, (0, pad_w, 0, pad_h), mode="replicate")
-
-#         w_x = haar_dwt(x)
-#         w_d = self.conv_stack(w_x)
-#         x_d = haar_idwt(w_d)
-
-#         if pad_h or pad_w:
-#             x_d = x_d[..., :h, :w]
-
-#         return x_d, w_d
-
-#     def forward(self, x: Tensor) -> Tensor:
-#         x_d, _ = self.forward_with_wave(x)
-
-#         return x_d
+from ..utils import DAPPM, PAPPM, BasicBlock, Bottleneck
+from .pidnet import PagFM, Bag, LightBag
 
 
 class SDM(BaseModule):
@@ -232,125 +182,6 @@ class ECALayer(BaseModule):
         return x * y.expand_as(x)
 
 
-# def haar_dwt(x: Tensor) -> Tensor:
-#     assert x.dim() == 4, f"Expected 4D input (B,C,H,W), got {x.dim()}D"
-#     _, _, h, w = x.shape
-#     assert h % 2 == 0 and w % 2 == 0, (
-#         f"Input height and width must be even, got H={h}, W={w}"
-#     )
-
-#     x_even_row = x[:, :, 0::2, :]
-#     x_odd_row = x[:, :, 1::2, :]
-
-#     ll = (
-#         x_even_row[:, :, :, 0::2]
-#         + x_odd_row[:, :, :, 0::2]
-#         + x_even_row[:, :, :, 1::2]
-#         + x_odd_row[:, :, :, 1::2]
-#     ) * 0.5
-#     lh = (
-#         x_even_row[:, :, :, 0::2]
-#         + x_odd_row[:, :, :, 0::2]
-#         - x_even_row[:, :, :, 1::2]
-#         - x_odd_row[:, :, :, 1::2]
-#     ) * 0.5
-#     hl = (
-#         x_even_row[:, :, :, 0::2]
-#         - x_odd_row[:, :, :, 0::2]
-#         + x_even_row[:, :, :, 1::2]
-#         - x_odd_row[:, :, :, 1::2]
-#     ) * 0.5
-#     hh = (
-#         x_even_row[:, :, :, 0::2]
-#         - x_odd_row[:, :, :, 0::2]
-#         - x_even_row[:, :, :, 1::2]
-#         + x_odd_row[:, :, :, 1::2]
-#     ) * 0.5
-
-#     return torch.cat([ll, lh, hl, hh], dim=1)
-
-
-# def haar_idwt(coeffs: Tensor) -> Tensor:
-#     assert coeffs.dim() == 4, f"Expected 4D input (B,C*4,H,W), got {coeffs.dim()}D"
-#     b, c4, h, w = coeffs.shape
-#     assert c4 % 4 == 0, f"Channels must be divisible by 4, got {c4}"
-#     c = c4 // 4
-
-#     ll = coeffs[:, :c]
-#     lh = coeffs[:, c : 2 * c]
-#     hl = coeffs[:, 2 * c : 3 * c]
-#     hh = coeffs[:, 3 * c :]
-
-#     x00 = ll + lh + hl + hh
-#     x01 = ll - lh + hl - hh
-#     x10 = ll + lh - hl - hh
-#     x11 = ll - lh - hl + hh
-
-#     top = torch.stack([x00, x01], dim=-1)
-#     bottom = torch.stack([x10, x11], dim=-1)
-#     out = torch.stack([top, bottom], dim=-2)
-#     out = out.reshape(b, c, h * 2, w * 2)
-#     return out * 0.5
-
-
-# class AWM(BaseModule):
-#     def __init__(self, init_cfg: OptConfigType = None):
-#         super().__init__(init_cfg)
-#         self.alpha = nn.Parameter(torch.tensor(1.0))
-#         self.beta = nn.Parameter(torch.tensor(0.5))
-#         self.gamma = nn.Parameter(torch.tensor(0.5))
-#         self.omega = nn.Parameter(torch.tensor(0.5))
-
-#     def forward(self, feature_2d: Tensor) -> Tensor:
-#         coeffs = haar_dwt(feature_2d)
-#         _, c4, _, _ = coeffs.shape
-#         c = c4 // 4
-#         ll = coeffs[:, :c]
-#         lh = coeffs[:, c : 2 * c]
-#         hl = coeffs[:, 2 * c : 3 * c]
-#         hh = coeffs[:, 3 * c :]
-#         weighted = (
-#             self.alpha * ll + self.beta * lh + self.gamma * hl + self.omega * hh
-#         ) / 4.0
-#         return weighted
-
-
-# class BEM(BaseModule):
-#     def __init__(
-#         self,
-#         in_channels: int,
-#         norm_cfg: OptConfigType = dict(type="BN"),
-#         init_cfg: OptConfigType = None,
-#     ):
-#         super().__init__(init_cfg)
-#         self.awm_max = AWM()
-#         self.awm_avg = AWM()
-#         self.spatial_conv = ConvModule(
-#             2, 1, kernel_size=7, padding=3, norm_cfg=norm_cfg, act_cfg=None
-#         )
-#         self.eca = ECALayer(in_channels)
-
-#     def forward(self, f_b: Tensor) -> Tensor:
-#         max_pool = torch.max(f_b, dim=1, keepdim=True)[0]
-#         avg_pool = torch.mean(f_b, dim=1, keepdim=True)
-
-#         max_weighted = self.awm_max(max_pool)
-#         avg_weighted = self.awm_avg(avg_pool)
-
-#         max_up = F.interpolate(
-#             max_weighted, size=f_b.shape[2:], mode="bilinear", align_corners=False
-#         )
-#         avg_up = F.interpolate(
-#             avg_weighted, size=f_b.shape[2:], mode="bilinear", align_corners=False
-#         )
-
-#         spatial_input = torch.cat([max_up, avg_up], dim=1)
-#         spatial_attn = torch.sigmoid(self.spatial_conv(spatial_input))
-#         f_b_attn = f_b * spatial_attn
-#         f_b_res = f_b + f_b_attn
-#         return self.eca(f_b_res)
-
-
 class AWM(nn.Module):
     """
     AWM with:
@@ -416,7 +247,7 @@ class AWM(nn.Module):
             out = self._match_hw(out, target_h, target_w, pad_mode=self.pad_mode_if_needed)
 
         return out
-    
+
 
 class BEM(BaseModule):
     """
@@ -573,9 +404,8 @@ class MSFM(BaseModule):
             f_ls_small,
             size=orig_size,
             mode="bilinear",
-            align_corners=self.align_corners,
-        )
-        
+            align_corners=self.align_corners)
+
         f_comb = torch.cat([f_ls, f_b], dim=1)
 
         v_pool = torch.mean(f_comb, dim=3, keepdim=True).expand_as(f_comb)
@@ -670,38 +500,119 @@ class NNSGenerator(BaseModule):
 
 
 @MODELS.register_module()
-class ELSNet(PIDNet):
-    def __init__(
-        self,
-        in_channels: int = 1,
-        channels: int = 64,
-        ppm_channels: int = 96,
-        num_stem_blocks: int = 2,
-        num_branch_blocks: int = 3,
-        align_corners: bool = False,
-        norm_cfg: OptConfigType = dict(type="BN"),
-        act_cfg: OptConfigType = dict(type="ReLU", inplace=True),
-        sdm_cfg: OptConfigType = None,
-        bem_cfg: OptConfigType = None,
-        use_msfm: bool = True,
-        msfm_cfg: OptConfigType = None,
-        nns_cfg: OptConfigType = None,
-        init_cfg: OptConfigType = None,
-        **kwargs,
-    ):
-        super().__init__(
-            in_channels=in_channels,
-            channels=channels,
-            ppm_channels=ppm_channels,
-            num_stem_blocks=num_stem_blocks,
-            num_branch_blocks=num_branch_blocks,
-            align_corners=align_corners,
+class ELSNet(BaseModule):
+    def __init__(self,
+                in_channels: int = 1,
+                channels: int = 64,
+                ppm_channels: int = 96,
+                num_stem_blocks: int = 2,
+                num_branch_blocks: int = 3,
+                align_corners: bool = False,
+                norm_cfg: OptConfigType = dict(type="BN"),
+                act_cfg: OptConfigType = dict(type="ReLU", inplace=True),
+                sdm_cfg: OptConfigType = None,
+                bem_cfg: OptConfigType = None,
+                use_msfm: bool = True,
+                msfm_cfg: OptConfigType = None,
+                nns_cfg: OptConfigType = None,
+                init_cfg: OptConfigType = None,
+                **kwargs):
+        super().__init__(init_cfg)
+        self.norm_cfg = norm_cfg
+        self.act_cfg = act_cfg
+        self.align_corners = align_corners
+
+        # stem layer
+        self.stem = self._make_stem_layer(in_channels, channels, num_stem_blocks)
+        self.relu = nn.ReLU()
+
+        # I Branch
+        self.i_branch_layers = nn.ModuleList()
+        for i in range(3):
+            self.i_branch_layers.append(
+                self._make_layer(
+                    block=BasicBlock if i < 2 else Bottleneck,
+                    in_channels=channels * 2 ** (i + 1),
+                    channels=channels * 8 if i > 0 else channels * 4,
+                    num_blocks=num_branch_blocks if i < 2 else 2,
+                    stride=2,
+                )
+            )
+
+        # P Branch
+        self.p_branch_layers = nn.ModuleList()
+        for i in range(3):
+            self.p_branch_layers.append(
+                self._make_layer(
+                    block=BasicBlock if i < 2 else Bottleneck,
+                    in_channels=channels * 2,
+                    channels=channels * 2,
+                    num_blocks=num_stem_blocks if i < 2 else 1))
+        self.compression_1 = ConvModule(
+            channels * 4,
+            channels * 2,
+            kernel_size=1,
+            bias=False,
             norm_cfg=norm_cfg,
-            act_cfg=act_cfg,
-            init_cfg=init_cfg,
-            **kwargs,
+            act_cfg=None)
+        self.compression_2 = ConvModule(
+            channels * 8,
+            channels * 2,
+            kernel_size=1,
+            bias=False,
+            norm_cfg=norm_cfg,
+            act_cfg=None)
+        self.pag_1 = PagFM(channels * 2, channels)
+        self.pag_2 = PagFM(channels * 2, channels)
+
+        if num_stem_blocks == 2:
+            self.d_branch_layers = nn.ModuleList([
+                self._make_single_layer(BasicBlock, channels * 2, channels),
+                self._make_layer(Bottleneck, channels, channels, 1),
+            ])
+            channel_expand = 1
+            spp_module = PAPPM
+            dfm_module = LightBag
+            act_cfg_dfm = None
+        else:
+            self.d_branch_layers = nn.ModuleList([
+                self._make_single_layer(BasicBlock, channels * 2, channels * 2),
+                self._make_single_layer(BasicBlock, channels * 2, channels * 2),
+            ])
+            channel_expand = 2
+            spp_module = DAPPM
+            dfm_module = Bag
+            act_cfg_dfm = act_cfg
+
+        self.diff_1 = ConvModule(
+            channels * 4,
+            channels * channel_expand,
+            kernel_size=3,
+            padding=1,
+            bias=False,
+            norm_cfg=norm_cfg,
+            act_cfg=None,
+        )
+        self.diff_2 = ConvModule(
+            channels * 8,
+            channels * 2,
+            kernel_size=3,
+            padding=1,
+            bias=False,
+            norm_cfg=norm_cfg,
+            act_cfg=None,
         )
 
+        self.spp = spp_module(channels * 16, ppm_channels, channels * 4, num_scales=5)
+        self.dfm = dfm_module(
+            channels * 4, channels * 4, norm_cfg=norm_cfg, act_cfg=act_cfg_dfm
+        )
+
+        self.d_branch_layers.append(
+            self._make_layer(Bottleneck, channels * 2, channels * 2, 1)
+        )
+
+        # ----- (B) ELSNet 고유 모듈 추가(기존 코드 그대로) -----
         sdm_args = dict(
             in_channels=in_channels,
             mid_channels=64,
@@ -733,6 +644,7 @@ class ELSNet(PIDNet):
             )
             if msfm_cfg is not None:
                 msfm_base_args.update(msfm_cfg)
+
             self.msfm_1 = MSFM(
                 hs_channels=channels * 8,
                 ls_channels=channels * 2,
@@ -754,6 +666,130 @@ class ELSNet(PIDNet):
             nns_args.update(nns_cfg)
         self.nns = NNSGenerator(**nns_args)
 
+    def _make_stem_layer(self, in_channels: int, channels: int, num_blocks: int) -> nn.Sequential:
+        layers = [
+            ConvModule(
+                in_channels,
+                channels,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+                norm_cfg=self.norm_cfg,
+                act_cfg=self.act_cfg,
+            ),
+            ConvModule(
+                channels,
+                channels,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+                norm_cfg=self.norm_cfg,
+                act_cfg=self.act_cfg,
+            ),
+        ]
+
+        layers.append(self._make_layer(BasicBlock, channels, channels, num_blocks))
+        layers.append(nn.ReLU())
+        layers.append(self._make_layer(BasicBlock, channels, channels * 2, num_blocks, stride=2))
+        layers.append(nn.ReLU())
+        return nn.Sequential(*layers)
+
+    def _make_layer(
+        self,
+        block,
+        in_channels: int,
+        channels: int,
+        num_blocks: int,
+        stride: int = 1,
+    ) -> nn.Sequential:
+        downsample = None
+        if stride != 1 or in_channels != channels * block.expansion:
+            downsample = ConvModule(
+                in_channels,
+                channels * block.expansion,
+                kernel_size=1,
+                stride=stride,
+                norm_cfg=self.norm_cfg,
+                act_cfg=None,
+            )
+
+        layers = [block(in_channels, channels, stride, downsample)]
+        in_channels = channels * block.expansion
+        for i in range(1, num_blocks):
+            layers.append(
+                block(
+                    in_channels,
+                    channels,
+                    stride=1,
+                    act_cfg_out=None if i == num_blocks - 1 else self.act_cfg,
+                )
+            )
+        return nn.Sequential(*layers)
+
+    def _make_single_layer(
+        self,
+        block,
+        in_channels: int,
+        channels: int,
+        stride: int = 1,
+    ) -> nn.Module:
+        downsample = None
+        if stride != 1 or in_channels != channels * block.expansion:
+            downsample = ConvModule(
+                in_channels,
+                channels * block.expansion,
+                kernel_size=1,
+                stride=stride,
+                norm_cfg=self.norm_cfg,
+                act_cfg=None,
+            )
+        return block(in_channels, channels, stride, downsample, act_cfg_out=None)
+
+    # ---------- init_weights: shape 일치만 로드(첫 conv mismatch 자동 스킵) ----------
+    def init_weights(self):
+        # 기본 kaiming init (PIDNet 방식 유지)
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+        if self.init_cfg is None:
+            return
+
+        assert isinstance(self.init_cfg, dict) and "checkpoint" in self.init_cfg, (
+            "ELSNet.init_cfg must be a dict and include `checkpoint`."
+        )
+
+        ckpt = CheckpointLoader.load_checkpoint(self.init_cfg["checkpoint"], map_location="cpu")
+        sd = ckpt.get("state_dict", ckpt)
+
+        model_sd = self.state_dict()
+        load_sd = {k: v for k, v in sd.items()
+                if k in model_sd and tuple(v.shape) == tuple(model_sd[k].shape)}
+        # def strip_prefix(k: str) -> str:
+        #     # 흔한 prefix들 제거
+        #     for p in ("module.", "backbone."):
+        #         if k.startswith(p):
+        #             k = k[len(p):]
+        #     return k
+
+        # for k, v in sd.items():
+        #     nk = strip_prefix(k)
+
+        #     # decode_head.* 등은 어차피 없으니 자동 스킵
+        #     if nk not in model_sd:
+        #         continue
+
+        #     # shape가 안 맞는 것(첫 conv 포함)은 스킵
+        #     if tuple(v.shape) != tuple(model_sd[nk].shape):
+        #         continue
+
+        #     load_sd[nk] = v
+
+        self.load_state_dict(load_sd, strict=False)
+
+    # ---------- 기존 ELSNet 기능들 ----------
     def generate_nns(self, x: Tensor) -> Tensor:
         return self.nns(x)
 
@@ -772,12 +808,8 @@ class ELSNet(PIDNet):
         comp_i = self.compression_1(x_i)
         x_p = self.pag_1(x_p, comp_i)
         diff_i = self.diff_1(x_i)
-        x_d += F.interpolate(
-            diff_i,
-            size=[h_out, w_out],
-            mode="bilinear",
-            align_corners=self.align_corners,
-        )
+        x_d += F.interpolate(diff_i, size=[h_out, w_out], mode="bilinear",
+                             align_corners=self.align_corners)
         if self.training:
             temp_p = x_p.clone()
 
@@ -788,21 +820,13 @@ class ELSNet(PIDNet):
         comp_i = self.compression_2(x_i)
         x_p = self.pag_2(x_p, comp_i)
         diff_i = self.diff_2(x_i)
-        x_d += F.interpolate(
-            diff_i,
-            size=[h_out, w_out],
-            mode="bilinear",
-            align_corners=self.align_corners,
-        )
+        x_d += F.interpolate(diff_i, size=[h_out, w_out], mode="bilinear",
+                             align_corners=self.align_corners)
 
         if self.use_msfm:
             msfm_feat = self.msfm_1(x_i, x_p, x_d)
-            msfm_feat = F.interpolate(
-                msfm_feat,
-                size=x_i.shape[2:],
-                mode="bilinear",
-                align_corners=self.align_corners,
-            )
+            msfm_feat = F.interpolate(msfm_feat, size=x_i.shape[2:], mode="bilinear",
+                                      align_corners=self.align_corners)
             x_i = x_i + msfm_feat
 
         if self.training:
@@ -813,9 +837,8 @@ class ELSNet(PIDNet):
         x_d = self.bem_3(self.d_branch_layers[2](self.relu(x_d)))
 
         x_i = self.spp(x_i)
-        x_i = F.interpolate(
-            x_i, size=[h_out, w_out], mode="bilinear", align_corners=self.align_corners
-        )
+        x_i = F.interpolate(x_i, size=[h_out, w_out], mode="bilinear",
+                            align_corners=self.align_corners)
 
         if self.use_msfm:
             x_i = x_i + self.msfm_2(x_i, x_p, x_d)
