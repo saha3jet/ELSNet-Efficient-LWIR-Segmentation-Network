@@ -11,7 +11,7 @@ from .dice_loss import DiceLoss
 from .focal_loss import FocalLoss
 from .huasdorff_distance_loss import HuasdorffDisstanceLoss
 from .lovasz_loss import LovaszLoss
-from .lwir_losses import BoundarySemanticLoss, IMSELoss, LowSemanticLoss
+from .lwir_losses import BoundarySemanticLoss, IMSELoss, LowSemanticLoss, SoftContrastiveWaveletLoss
 from .ohem_cross_entropy_loss import OhemCrossEntropy
 from .silog_loss import SiLogLoss
 from .tversky_loss import TverskyLoss
@@ -38,4 +38,5 @@ __all__ = [
     "IMSELoss",
     "LowSemanticLoss",
     "BoundarySemanticLoss",
+    "SoftContrastiveWaveletLoss",
 ]

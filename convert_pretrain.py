@@ -19,7 +19,7 @@ import torch
 #
 # 예시 3) 네 커스텀 패키지 경로:
 # from my_pkg.models.backbones.elsnet import ELSNet
-from mmseg.models.backbones.elsnet import ELSNet
+from mmseg.models.backbones.elsnet_old import ELSNet
 
 
 def _try_load_with_mmengine(path: str, map_location: str = "cpu"):

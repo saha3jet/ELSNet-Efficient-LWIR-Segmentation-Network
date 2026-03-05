@@ -1,6 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import math
-from typing import Tuple, Union
+import copy
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -15,57 +16,6 @@ from mmseg.utils import OptConfigType
 from pytorch_wavelets import DWTForward, DWTInverse
 from ..utils import DAPPM, PAPPM, BasicBlock, Bottleneck
 from .pidnet import PagFM, Bag, LightBag
-
-# class SDM(BaseModule):
-#     def __init__(
-#         self,
-#         in_channels: int = 1,
-#         mid_channels: int = 64,
-#         num_layers: int = 3,
-#         norm_cfg: OptConfigType = dict(type="BN"),
-#         act_cfg: OptConfigType = dict(type="ReLU", inplace=True),
-#         init_cfg: OptConfigType = None,
-#     ):
-#         super().__init__(init_cfg)
-#         wavelet_channels = in_channels * 4
-#         layers = []
-#         in_ch = wavelet_channels
-#         for i in range(num_layers):
-#             out_ch = mid_channels if i < num_layers - 1 else wavelet_channels
-#             use_act = act_cfg if i < num_layers - 1 else None
-#             layers.append(
-#                 ConvModule(
-#                     in_ch,
-#                     out_ch,
-#                     kernel_size=3,
-#                     padding=1,
-#                     norm_cfg=norm_cfg,
-#                     act_cfg=use_act,
-#                 )
-#             )
-#             in_ch = out_ch
-#         self.conv_stack = nn.Sequential(*layers)
-
-#     def forward_with_wave(self, x: Tensor) -> Tuple[Tensor, Tensor]:
-#         h, w = x.shape[-2:]
-#         pad_h = h % 2
-#         pad_w = w % 2
-#         if pad_h or pad_w:
-#             x = F.pad(x, (0, pad_w, 0, pad_h), mode="replicate")
-
-#         w_x = haar_dwt(x)
-#         w_d = self.conv_stack(w_x)
-#         x_d = haar_idwt(w_d)
-
-#         if pad_h or pad_w:
-#             x_d = x_d[..., :h, :w]
-
-#         return x_d, w_d
-
-#     def forward(self, x: Tensor) -> Tensor:
-#         x_d, _ = self.forward_with_wave(x)
-
-#         return x_d
 
 
 class SDM(BaseModule):
@@ -166,6 +116,30 @@ class SDM(BaseModule):
 
         return x
 
+
+    def forward_wave(self, x: Tensor) -> Tensor:
+        """Return wavelet-domain output W_d without reconstructing x_d.
+
+        Useful for the *second* SDM pass in contrastive denoising (5-C),
+        since it avoids IDWT reconstruction.
+        """
+        assert x.dim() == 4, f"Expected 4D input (B,C,H,W), got {x.dim()}D"
+        assert x.shape[1] == self.in_channels, (
+            f"SDM configured with in_channels={self.in_channels}, but input has C={x.shape[1]}"
+        )
+
+        orig_h, orig_w = x.shape[-2], x.shape[-1]
+        pad_h = orig_h % 2
+        pad_w = orig_w % 2
+        if pad_h or pad_w:
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode=self.pad_mode)
+
+        yl, yh = self.dwt(x)
+        yh0 = yh[0]
+        w_x = self._pack_wavelet(yl, yh0)
+        w_d = self.conv_stack(w_x)
+        return w_d
+
     def forward_with_wave(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         """
         returns:
@@ -233,125 +207,6 @@ class ECALayer(BaseModule):
         return x * y.expand_as(x)
 
 
-# def haar_dwt(x: Tensor) -> Tensor:
-#     assert x.dim() == 4, f"Expected 4D input (B,C,H,W), got {x.dim()}D"
-#     _, _, h, w = x.shape
-#     assert h % 2 == 0 and w % 2 == 0, (
-#         f"Input height and width must be even, got H={h}, W={w}"
-#     )
-
-#     x_even_row = x[:, :, 0::2, :]
-#     x_odd_row = x[:, :, 1::2, :]
-
-#     ll = (
-#         x_even_row[:, :, :, 0::2]
-#         + x_odd_row[:, :, :, 0::2]
-#         + x_even_row[:, :, :, 1::2]
-#         + x_odd_row[:, :, :, 1::2]
-#     ) * 0.5
-#     lh = (
-#         x_even_row[:, :, :, 0::2]
-#         + x_odd_row[:, :, :, 0::2]
-#         - x_even_row[:, :, :, 1::2]
-#         - x_odd_row[:, :, :, 1::2]
-#     ) * 0.5
-#     hl = (
-#         x_even_row[:, :, :, 0::2]
-#         - x_odd_row[:, :, :, 0::2]
-#         + x_even_row[:, :, :, 1::2]
-#         - x_odd_row[:, :, :, 1::2]
-#     ) * 0.5
-#     hh = (
-#         x_even_row[:, :, :, 0::2]
-#         - x_odd_row[:, :, :, 0::2]
-#         - x_even_row[:, :, :, 1::2]
-#         + x_odd_row[:, :, :, 1::2]
-#     ) * 0.5
-
-#     return torch.cat([ll, lh, hl, hh], dim=1)
-
-
-# def haar_idwt(coeffs: Tensor) -> Tensor:
-#     assert coeffs.dim() == 4, f"Expected 4D input (B,C*4,H,W), got {coeffs.dim()}D"
-#     b, c4, h, w = coeffs.shape
-#     assert c4 % 4 == 0, f"Channels must be divisible by 4, got {c4}"
-#     c = c4 // 4
-
-#     ll = coeffs[:, :c]
-#     lh = coeffs[:, c : 2 * c]
-#     hl = coeffs[:, 2 * c : 3 * c]
-#     hh = coeffs[:, 3 * c :]
-
-#     x00 = ll + lh + hl + hh
-#     x01 = ll - lh + hl - hh
-#     x10 = ll + lh - hl - hh
-#     x11 = ll - lh - hl + hh
-
-#     top = torch.stack([x00, x01], dim=-1)
-#     bottom = torch.stack([x10, x11], dim=-1)
-#     out = torch.stack([top, bottom], dim=-2)
-#     out = out.reshape(b, c, h * 2, w * 2)
-#     return out * 0.5
-
-
-# class AWM(BaseModule):
-#     def __init__(self, init_cfg: OptConfigType = None):
-#         super().__init__(init_cfg)
-#         self.alpha = nn.Parameter(torch.tensor(1.0))
-#         self.beta = nn.Parameter(torch.tensor(0.5))
-#         self.gamma = nn.Parameter(torch.tensor(0.5))
-#         self.omega = nn.Parameter(torch.tensor(0.5))
-
-#     def forward(self, feature_2d: Tensor) -> Tensor:
-#         coeffs = haar_dwt(feature_2d)
-#         _, c4, _, _ = coeffs.shape
-#         c = c4 // 4
-#         ll = coeffs[:, :c]
-#         lh = coeffs[:, c : 2 * c]
-#         hl = coeffs[:, 2 * c : 3 * c]
-#         hh = coeffs[:, 3 * c :]
-#         weighted = (
-#             self.alpha * ll + self.beta * lh + self.gamma * hl + self.omega * hh
-#         ) / 4.0
-#         return weighted
-
-
-# class BEM(BaseModule):
-#     def __init__(
-#         self,
-#         in_channels: int,
-#         norm_cfg: OptConfigType = dict(type="BN"),
-#         init_cfg: OptConfigType = None,
-#     ):
-#         super().__init__(init_cfg)
-#         self.awm_max = AWM()
-#         self.awm_avg = AWM()
-#         self.spatial_conv = ConvModule(
-#             2, 1, kernel_size=7, padding=3, norm_cfg=norm_cfg, act_cfg=None
-#         )
-#         self.eca = ECALayer(in_channels)
-
-#     def forward(self, f_b: Tensor) -> Tensor:
-#         max_pool = torch.max(f_b, dim=1, keepdim=True)[0]
-#         avg_pool = torch.mean(f_b, dim=1, keepdim=True)
-
-#         max_weighted = self.awm_max(max_pool)
-#         avg_weighted = self.awm_avg(avg_pool)
-
-#         max_up = F.interpolate(
-#             max_weighted, size=f_b.shape[2:], mode="bilinear", align_corners=False
-#         )
-#         avg_up = F.interpolate(
-#             avg_weighted, size=f_b.shape[2:], mode="bilinear", align_corners=False
-#         )
-
-#         spatial_input = torch.cat([max_up, avg_up], dim=1)
-#         spatial_attn = torch.sigmoid(self.spatial_conv(spatial_input))
-#         f_b_attn = f_b * spatial_attn
-#         f_b_res = f_b + f_b_attn
-#         return self.eca(f_b_res)
-
-
 class AWM(nn.Module):
     """
     AWM with:
@@ -417,7 +272,7 @@ class AWM(nn.Module):
             out = self._match_hw(out, target_h, target_w, pad_mode=self.pad_mode_if_needed)
 
         return out
-
+   
 
 class BEM(BaseModule):
     """
@@ -433,7 +288,7 @@ class BEM(BaseModule):
         in_channels: int,
         norm_cfg: OptConfigType = dict(type="BN"),
         wave: str = "db1",
-        mode: str = "periodization",
+        mode: str = "reflect",
         init_cfg: OptConfigType = None,
     ):
         super().__init__(init_cfg)
@@ -461,33 +316,6 @@ class BEM(BaseModule):
         f_b_attn = f_b * spatial_attn
         f_b_res = f_b + f_b_attn
         return self.eca(f_b_res)
-
-
-class _PagFM(BaseModule):
-    def __init__(
-        self,
-        in_channels: int,
-        channels: int,
-        upsample_mode: str = "bilinear",
-        norm_cfg: OptConfigType = dict(type="BN"),
-        init_cfg: OptConfigType = None,
-    ):
-        super().__init__(init_cfg)
-        self.upsample_mode = upsample_mode
-        self.f_i = ConvModule(in_channels, channels, 1, norm_cfg=norm_cfg, act_cfg=None)
-        self.f_p = ConvModule(in_channels, channels, 1, norm_cfg=norm_cfg, act_cfg=None)
-
-    def forward(self, x_p: Tensor, x_i: Tensor) -> Tensor:
-        f_i = self.f_i(x_i)
-        f_i = F.interpolate(
-            f_i, size=x_p.shape[2:], mode=self.upsample_mode, align_corners=False
-        )
-        f_p = self.f_p(x_p)
-        sigma = torch.sigmoid(torch.sum(f_p * f_i, dim=1).unsqueeze(1))
-        x_i = F.interpolate(
-            x_i, size=x_p.shape[2:], mode=self.upsample_mode, align_corners=False
-        )
-        return sigma * x_i + (1 - sigma) * x_p
 
 
 class MSFM(BaseModule):
@@ -543,7 +371,7 @@ class MSFM(BaseModule):
         self.hs_to_b = ConvModule(
             hs_channels, b_channels, kernel_size=1, norm_cfg=norm_cfg, act_cfg=None
         )
-        self.pag = _PagFM(
+        self.pag = PagFM(
             in_channels=ls_channels,
             channels=max(ls_channels // 2, 1),
             upsample_mode="bilinear",
@@ -574,8 +402,9 @@ class MSFM(BaseModule):
             f_ls_small,
             size=orig_size,
             mode="bilinear",
-            align_corners=self.align_corners)
-
+            align_corners=self.align_corners,
+        )
+        
         f_comb = torch.cat([f_ls, f_b], dim=1)
 
         v_pool = torch.mean(f_comb, dim=3, keepdim=True).expand_as(f_comb)
@@ -612,58 +441,112 @@ class MSFM(BaseModule):
 
 
 class NNSGenerator(BaseModule):
+    """Negative Noise Sample (NNS) generator (Option 2.1).
+
+    Sensor-like fixed-pattern noise (FPN) approximation:
+      - 1D correlated noise along rows/cols (irregular stripe-like pattern)
+      - additive offset + multiplicative gain
+
+    Notes
+    -----
+    - The legacy args (amplitude/freq_*) are kept for config compatibility,
+      but the actual generation is NOT sinusoidal anymore.
+    - For odd H/W, we do NOT need to pad here; SDM/loss handle padding for DWT.
+    """
+
     def __init__(
         self,
         lambda_min: float = 0.05,
         lambda_max: float = 0.20,
+        # legacy args (kept for config compatibility)
         amplitude: float = 0.15,
-        freq_min: float = 2.0,
-        freq_max: float = 12.0,
+        freq_min: float = 2.0,   # legacy (unused)
+        freq_max: float = 12.0,  # legacy (unused)
         direction: str = "both",
+        # new args
+        offset_std: Optional[float] = None,
+        gain_std: Optional[float] = None,
+        corr_kernel_size: int = 21,
+        corr_sigma: Optional[float] = None,
+        eps: float = 1e-6,
         init_cfg: OptConfigType = None,
     ):
         super().__init__(init_cfg)
-        self.lambda_min = lambda_min
-        self.lambda_max = lambda_max
-        self.amplitude = amplitude
-        self.freq_min = freq_min
-        self.freq_max = freq_max
+        self.lambda_min = float(lambda_min)
+        self.lambda_max = float(lambda_max)
+        self.amplitude = float(amplitude)
+        self.freq_min = float(freq_min)
+        self.freq_max = float(freq_max)
         self.direction = direction
+
+        # If not explicitly provided, map legacy amplitude to std scales
+        self.offset_std = float(offset_std) if offset_std is not None else float(amplitude)
+        self.gain_std = float(gain_std) if gain_std is not None else float(amplitude)
+
+        self.corr_kernel_size = int(corr_kernel_size)
+        # default sigma: ~k/6 is a common heuristic
+        if corr_sigma is None:
+            self.corr_sigma = max(self.corr_kernel_size / 6.0, 1.0)
+        else:
+            self.corr_sigma = float(corr_sigma)
+
+        self.eps = float(eps)
+
+    def _gaussian_kernel_1d(self, device, dtype) -> Tensor:
+        k = self.corr_kernel_size
+        sigma = self.corr_sigma
+        x = torch.arange(k, device=device, dtype=dtype) - (k - 1) / 2.0
+        kernel = torch.exp(-0.5 * (x / sigma) ** 2)
+        kernel = kernel / (kernel.sum() + self.eps)
+        return kernel.view(1, 1, k)  # (out_ch=1, in_ch=1, k)
+
+    def _correlated_1d(self, b: int, c: int, length: int, device, dtype) -> Tensor:
+        """Return (B, C, 1, L) correlated noise with ~N(0,1) per sample/channel."""
+        # white noise
+        n = torch.randn((b * c, 1, length), device=device, dtype=dtype)
+
+        # low-pass correlation
+        kernel = self._gaussian_kernel_1d(device=device, dtype=dtype)
+        n = F.conv1d(n, kernel, padding=self.corr_kernel_size // 2)
+
+        # normalize per (B,C)
+        n = n.view(b, c, 1, length)
+        n = n - n.mean(dim=-1, keepdim=True)
+        n = n / (n.std(dim=-1, keepdim=True) + self.eps)
+        return n
 
     def forward(self, x: Tensor) -> Tensor:
         b, c, h, w = x.shape
-        device = x.device
-        dtype = x.dtype
+        device, dtype = x.device, x.dtype
 
-        y = torch.linspace(0, 1, h, device=device, dtype=dtype).view(1, 1, h, 1)
-        z = torch.linspace(0, 1, w, device=device, dtype=dtype).view(1, 1, 1, w)
-
-        stripe = torch.zeros((b, c, h, w), device=device, dtype=dtype)
-
-        if self.direction in ("horizontal", "both"):
-            freq_h = torch.empty((b, c, 1, 1), device=device, dtype=dtype).uniform_(
-                self.freq_min, self.freq_max
-            )
-            phase_h = torch.empty((b, c, 1, 1), device=device, dtype=dtype).uniform_(
-                0.0, 2.0 * math.pi
-            )
-            stripe = stripe + torch.sin(2.0 * math.pi * freq_h * y + phase_h)
-
-        if self.direction in ("vertical", "both"):
-            freq_w = torch.empty((b, c, 1, 1), device=device, dtype=dtype).uniform_(
-                self.freq_min, self.freq_max
-            )
-            phase_w = torch.empty((b, c, 1, 1), device=device, dtype=dtype).uniform_(
-                0.0, 2.0 * math.pi
-            )
-            stripe = stripe + torch.sin(2.0 * math.pi * freq_w * z + phase_w)
-
-        stripe = stripe * self.amplitude
         lam = torch.empty((b, 1, 1, 1), device=device, dtype=dtype).uniform_(
             self.lambda_min, self.lambda_max
         )
 
-        x_n = x + lam * stripe
+        # accumulate offset/gain contributions (row/col)
+        offset = torch.zeros((b, c, h, w), device=device, dtype=dtype)
+        gain = torch.zeros((b, c, h, w), device=device, dtype=dtype)
+
+        if self.direction in ("vertical", "both"):
+            # column-wise patterns: (B,C,1,W) -> broadcast to H
+            col_off = self._correlated_1d(b, c, w, device, dtype) * self.offset_std
+            col_gain = self._correlated_1d(b, c, w, device, dtype) * self.gain_std
+            offset = offset + col_off.expand(b, c, h, w)
+            gain = gain + col_gain.expand(b, c, h, w)
+
+        if self.direction in ("horizontal", "both"):
+            # row-wise patterns: (B,C,1,H) -> (B,C,H,1) -> broadcast to W
+            row_off = self._correlated_1d(b, c, h, device, dtype) * self.offset_std
+            row_gain = self._correlated_1d(b, c, h, device, dtype) * self.gain_std
+            row_off = row_off.transpose(-1, -2)   # (B,C,H,1)
+            row_gain = row_gain.transpose(-1, -2) # (B,C,H,1)
+            offset = offset + row_off.expand(b, c, h, w)
+            gain = gain + row_gain.expand(b, c, h, w)
+
+        # sensor-like injection: gain + offset
+        x_n = x * (1.0 + lam * gain) + lam * offset
+
+        # preserve dynamic range
         x_min = torch.amin(x, dim=(2, 3), keepdim=True).detach()
         x_max = torch.amax(x, dim=(2, 3), keepdim=True).detach()
         return torch.clamp(x_n, x_min, x_max)
@@ -685,6 +568,9 @@ class ELSNet(BaseModule):
                 use_msfm: bool = True,
                 msfm_cfg: OptConfigType = None,
                 nns_cfg: OptConfigType = None,
+                # SDM teacher (EMA) for denoising contrastive learning
+                use_sdm_teacher: bool = False,
+                sdm_teacher_momentum: float = 0.999,
                 init_cfg: OptConfigType = None,
                 **kwargs):
         super().__init__(init_cfg)
@@ -793,6 +679,18 @@ class ELSNet(BaseModule):
         if sdm_cfg is not None:
             sdm_args.update(sdm_cfg)
         self.sdm = SDM(**sdm_args)
+
+        # ---- SDM teacher (EMA) ----
+        self.use_sdm_teacher = bool(use_sdm_teacher)
+        self.sdm_teacher_momentum = float(sdm_teacher_momentum)
+        if self.use_sdm_teacher:
+            self.sdm_teacher = copy.deepcopy(self.sdm)
+            self.sdm_teacher.eval()
+            for p in self.sdm_teacher.parameters():
+                p.requires_grad_(False)
+        else:
+            self.sdm_teacher = None
+
 
         d_stage1_channels = channels if num_stem_blocks == 2 else channels * 2
         d_stage2_channels = channels * 2
@@ -937,31 +835,70 @@ class ELSNet(BaseModule):
         model_sd = self.state_dict()
         load_sd = {k: v for k, v in sd.items()
                 if k in model_sd and tuple(v.shape) == tuple(model_sd[k].shape)}
-        # def strip_prefix(k: str) -> str:
-        #     # 흔한 prefix들 제거
-        #     for p in ("module.", "backbone."):
-        #         if k.startswith(p):
-        #             k = k[len(p):]
-        #     return k
-
-        # for k, v in sd.items():
-        #     nk = strip_prefix(k)
-
-        #     # decode_head.* 등은 어차피 없으니 자동 스킵
-        #     if nk not in model_sd:
-        #         continue
-
-        #     # shape가 안 맞는 것(첫 conv 포함)은 스킵
-        #     if tuple(v.shape) != tuple(model_sd[nk].shape):
-        #         continue
-
-        #     load_sd[nk] = v
-
         self.load_state_dict(load_sd, strict=False)
 
     # ---------- 기존 ELSNet 기능들 ----------
     def generate_nns(self, x: Tensor) -> Tensor:
         return self.nns(x)
+
+    def raw_wavelet_pack(self, x: Tensor) -> Tensor:
+        """Compute packed 1-level wavelet features W(x) using SDM's DWT settings.
+
+        Returns:
+            w: (B, 4C, H', W') where channels are [LL, LH, HL, HH].
+        """
+        assert hasattr(self, "sdm") and hasattr(self.sdm, "dwt"), "SDM must provide DWTForward as `sdm.dwt`."
+        orig_h, orig_w = x.shape[-2], x.shape[-1]
+        pad_h = orig_h % 2
+        pad_w = orig_w % 2
+        if pad_h or pad_w:
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode=self.sdm.pad_mode)
+
+        yl, yh = self.sdm.dwt(x)
+        yh0 = yh[0]
+        return SDM._pack_wavelet(yl, yh0)
+
+    @torch.no_grad()
+    def update_sdm_teacher(self, momentum=None, update_buffers=True):
+        """EMA update for SDM teacher.
+
+        Call this AFTER optimizer.step() in training loop / hook.
+        """
+        if self.sdm_teacher is None:
+            return
+
+        m = self.sdm_teacher_momentum if momentum is None else float(momentum)
+
+        # parameters
+        for (n_t, p_t), (n_s, p_s) in zip(
+            self.sdm_teacher.named_parameters(), self.sdm.named_parameters()
+        ):
+            if p_t.data.shape != p_s.data.shape:
+                continue
+            p_t.data.mul_(m).add_(p_s.data, alpha=1.0 - m)
+
+        # buffers는 옵션에 따라 실행
+        if not update_buffers:
+            return
+
+        for (n_t, b_t), (n_s, b_s) in zip(
+            self.sdm_teacher.named_buffers(), self.sdm.named_buffers()
+        ):
+            if b_t.data.shape != b_s.data.shape:
+                continue
+            if not torch.is_floating_point(b_t):
+                b_t.data.copy_(b_s.data)
+            else:
+                b_t.data.mul_(m).add_(b_s.data, alpha=1.0 - m)
+
+    @torch.no_grad()
+    def teacher_denoise_with_wave(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        """Forward SDM teacher (if enabled), else return stop-grad student output."""
+        if self.sdm_teacher is None:
+            x_d, w_d = self.sdm.forward_with_wave(x)
+            return x_d.detach(), w_d.detach()
+        return self.sdm_teacher.forward_with_wave(x)
+
 
     def forward_from_denoised(self, x_denoised: Tensor) -> Union[Tensor, Tuple[Tensor]]:
         w_out = x_denoised.shape[-1] // 8
