@@ -3,7 +3,7 @@ _base_ = [
     "../_base_/default_runtime.py",
 ]
 load_from = None
-crop_size = (480, 640) #(640, 480)
+crop_size = (480, 640)
 data_preprocessor = dict(
     type="SegDataPreProcessor",
     mean=[123.675],
@@ -54,14 +54,14 @@ model = dict(
             dict(
                 type="CrossEntropyLoss",
                 use_sigmoid=False,
-                class_weight=None, #class_weight,
+                class_weight=None,
                 loss_weight=0.4,
             ),
             dict(
                 type="OhemCrossEntropy",
                 thres=0.9,
                 min_kept=131072,
-                class_weight=None, #class_weight,
+                class_weight=None,
                 loss_weight=1.0,
             ),
             dict(type="BoundaryLoss", loss_weight=20.0),
@@ -69,20 +69,11 @@ model = dict(
                 type="OhemCrossEntropy",
                 thres=0.9,
                 min_kept=131072,
-                class_weight=None, #class_weight,
+                class_weight=None,
                 loss_weight=1.0,
             ),
         ],
     ),
-    # loss_imse=dict(
-    #     type="IMSELoss",
-    #     inverse=True,
-    #     per_channel=True,
-    #     inverse_transform="log1p",
-    #     eps=1e-6,
-    #     reduction="mean",
-    #     loss_weight=0.1,
-    # ),
     loss_imse=dict(
     type="SoftContrastiveWaveletLoss",
     eps=1e-3,
@@ -94,7 +85,6 @@ model = dict(
     test_cfg=dict(mode="whole"),
 )
 
-# iters = 120000
 iters = 60000
 optimizer = dict(type="SGD", lr=0.01, momentum=0.9, weight_decay=0.0005)
 optim_wrapper = dict(type="OptimWrapper", optimizer=optimizer, clip_grad=None)

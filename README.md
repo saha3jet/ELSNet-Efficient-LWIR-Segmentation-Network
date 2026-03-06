@@ -1,93 +1,112 @@
 # ELSNet: Efficient LWIR Segmentation Network (MMSegmentation-Based)
 
-This repository contains an ELSNet implementation for long-wave infrared (LWIR) semantic segmentation, built on top of MMSegmentation.
+This repository implements the architecture proposed in:
 
-## Implemented Components
+**Real-Time Long-Wave Infrared Semantic Segmentation With Adaptive Noise Reduction and Feature Fusion**  
+(IEEE Access, 2025)
 
-### 1) Backbone: `ELSNet`
+It also includes practical refinements for NNS generation and denoising training.
+
+## 1) Paper At A Glance
+
+The paper targets real-time LWIR semantic segmentation and focuses on:
+
+- adaptive noise reduction before segmentation (SDM)
+- boundary-aware feature enhancement (BEM)
+- multi-stream feature fusion (MSFM)
+- denoising-aware training with auxiliary losses (including iMSE-style formulation)
+
+The overall design follows a PID-style real-time segmentation backbone and adds LWIR-specific denoising/fusion blocks.
+
+## 2) What Is Implemented In This Repo
+
+### Backbone (`ELSNet`)
 File: `mmseg/models/backbones/elsnet.py`
 
-- PID-style backbone structure with detail/semantic/boundary streams.
-- `SDM` (denoising module) before stem.
-- `BEM` (boundary enhancement module) on D-branch stages.
-- Optional `MSFM` (multi-stream feature fusion module).
-- `NNSGenerator` for negative noise sample generation.
-- Wavelet utility paths for denoising training:
+- PID-style backbone with detail/semantic/boundary branches.
+- `SDM` denoising module in front of the stem.
+- `BEM` on D-branch stages.
+- Optional `MSFM` for high/low/boundary stream fusion.
+- `NNSGenerator` and denoising utilities:
+  - `generate_nns`
   - `denoise_with_wave`
   - `raw_wavelet_pack`
   - `forward_from_denoised`
-- Optional SDM teacher (EMA):
+- Optional teacher path for denoising:
   - `use_sdm_teacher`
   - `update_sdm_teacher`
   - `teacher_denoise_with_wave`
 
-### 2) Decode Head: `ELSHead`
+### Decode Head (`ELSHead`)
 File: `mmseg/models/decode_heads/els_head.py`
 
-- Multi-branch training outputs:
-  - `p_logit` (P-branch)
-  - `i_logit` (I-branch)
-  - `d_logit` (boundary)
-- BAS threshold control via `bas_threshold`.
-- Computes decode losses:
+- Training-time multi-branch outputs (`p_logit`, `i_logit`, `d_logit`).
+- BAS threshold control (`bas_threshold`).
+- Decode losses:
   - `loss_sem_p`
   - `loss_sem_i`
   - `loss_bd`
   - `loss_sem_bd`
 
-### 3) Segmentor: `ELSEncoderDecoder`
+### Segmentor (`ELSEncoderDecoder`)
 File: `mmseg/models/segmentors/els_encoder_decoder.py`
 
 - Extends `EncoderDecoder`.
-- Supports two denoising loss paths:
-  - Classic `IMSELoss` path.
-  - Soft-contrastive wavelet path (`SoftContrastiveWaveletLoss`, Option 5-C).
-- Uses SDM/NNS/teacher wavelet tensors for contrastive denoising when configured.
+- Supports both denoising training paths:
+  - classical `IMSELoss`
+  - soft-contrastive wavelet loss (`SoftContrastiveWaveletLoss`)
+- Handles SDM/NNS/teacher wavelet flow for denoising loss orchestration.
 
-### 4) Losses
+### Losses
 File: `mmseg/models/losses/lwir_losses.py`
 
-- `IMSELoss`
-  - Inverse-MSE option in wavelet domain.
-  - Wavelet packing aligned with SDM.
-- `SoftContrastiveWaveletLoss`
-  - Anchor/positive/negative wavelet contrastive formulation.
-  - HF-only option (drop LL).
+- `IMSELoss` (inverse-MSE option in wavelet domain)
+- `SoftContrastiveWaveletLoss` (anchor-positive-negative wavelet contrastive loss)
 - `LowSemanticLoss`
 - `BoundarySemanticLoss` (`hard` / `soft`)
 
-### 5) Hook
+### Hook
 File: `mmseg/engine/hooks/sdm_teacher_ema_hook.py`
 
-- `SDMTeacherEMAHook` updates SDM teacher by EMA after train iterations.
+- `SDMTeacherEMAHook` for EMA update of SDM teacher during training.
 
-### 6) Registry Integration
+### Registry Wiring
 
-- Backbones: `mmseg/models/backbones/__init__.py`
-- Decode heads: `mmseg/models/decode_heads/__init__.py`
-- Segmentors: `mmseg/models/segmentors/__init__.py`
-- Losses: `mmseg/models/losses/__init__.py`
-- Hooks: `mmseg/engine/hooks/__init__.py`
+- `mmseg/models/backbones/__init__.py`
+- `mmseg/models/decode_heads/__init__.py`
+- `mmseg/models/segmentors/__init__.py`
+- `mmseg/models/losses/__init__.py`
+- `mmseg/engine/hooks/__init__.py`
 
-## Available ELSNet Configs
+## 3) What Was Changed / Improved Beyond The Base Paper Flow
 
-- `configs/elsnet/elsnet-s_2xb6-120k_1024x1024-cityscapes.py`
-  - Cityscapes-style LWIR setup
-  - `IMSELoss` path
-- `configs/elsnet/elsnet-m_2xb6-80k_640x480-soda.py`
-  - SODA setup
-  - `SoftContrastiveWaveletLoss` + `SDMTeacherEMAHook`
+This repo is not a strict frozen copy. Main practical changes are:
 
-## Dataset Base Configs
+1. NNS generation refinement  
+`NNSGenerator` is implemented as a sensor-like correlated noise process (offset/gain + directional correlation), instead of a simple fixed synthetic pattern.
 
-- `configs/_base_/datasets/lwir_cityscapes_1024x1024.py`
-- `configs/_base_/datasets/soda_640x480.py`
+2. Denoising training refinement  
+In addition to `IMSELoss`, this repo supports `SoftContrastiveWaveletLoss` and corresponding wavelet tensor flow in `ELSEncoderDecoder`.
 
-## Quick Start
+3. Teacher-assisted denoising refinement  
+Optional SDM teacher + EMA update hook are provided (`use_sdm_teacher`, `SDMTeacherEMAHook`).
 
-### 1) Environment (example)
+4. Implementation-level stability improvements  
+Wavelet-domain packing/unpacking and denoising utility paths are integrated directly in backbone/segmentor for consistent training behavior.
 
-Install PyTorch, MMCV, MMEngine, then install this repo:
+## 4) Active Configs In This Repo
+
+- Train config:
+  - `configs/elsnet/elsnet-m_2xb6-120k_640x480-soda.py`
+- Test config:
+  - `configs/elsnet/elsnet-m_2xb6-120k_640x480-soda_test.py`
+- Dataset base:
+  - `configs/_base_/datasets/soda_640x480.py`
+  - `configs/_base_/datasets/lwir_cityscapes_1024x1024.py` (available as base dataset config)
+
+## 5) Quick Start
+
+### Environment
 
 ```bash
 pip install -U pip
@@ -96,27 +115,27 @@ pip install -r requirements/mminstall.txt
 pip install -e .
 ```
 
-If needed by your pipeline/modules:
+If required by your runtime path:
 
 ```bash
 pip install ftfy regex
 ```
 
-### 2) Train
+### Train
 
 ```bash
-python tools/train.py configs/elsnet/elsnet-m_2xb6-80k_640x480-soda.py
+python tools/train.py configs/elsnet/elsnet-m_2xb6-120k_640x480-soda.py
 ```
 
-or
+### Test
 
 ```bash
-python tools/train.py configs/elsnet/elsnet-s_2xb6-120k_1024x1024-cityscapes.py
+python tools/test.py \
+  configs/elsnet/elsnet-m_2xb6-120k_640x480-soda_test.py \
+  <CHECKPOINT_PATH>
 ```
 
-### 3) Validate Key Loss Terms
-
-Expected logs include:
+## 6) Expected Training Log Keys
 
 - `loss_imse`
 - `decode.loss_sem_p`
@@ -124,8 +143,7 @@ Expected logs include:
 - `decode.loss_bd`
 - `decode.loss_sem_bd`
 
-## Current Notes
+## 7) Notes
 
-- This repository focuses on ELSNet-specific implementation details.
-- Dataset paths, class metadata, and label mapping should be adjusted to your local dataset.
-- `configs/elsnet/elsnet-s_2xb6-120k_1024x1024-cityscapes.py` currently references `class_weight` in `loss_decode`; ensure `class_weight` is defined or set to `None` before training.
+- Dataset paths / class metadata / label mapping should be adjusted for your local setup.
+- This README summarizes both paper-aligned structure and current repository-level refinements.

@@ -3,7 +3,6 @@ dataset_type = 'SODADataset'
 data_root = 'data/soda/'
 crop_size = (480, 640)
 train_pipeline = [
-    # dict(type='LoadImageFromFile'),
     dict(type='LoadImageFromFile', color_type='grayscale'),
     dict(type='LoadAnnotations'),
     dict(
@@ -13,12 +12,10 @@ train_pipeline = [
         keep_ratio=True),
     dict(type='RandomCrop', crop_size=crop_size, cat_max_ratio=0.75),
     dict(type='RandomFlip', prob=0.5),
-    # dict(type='PhotoMetricDistortion'),
     dict(type='GenerateEdge', edge_width=4),
     dict(type='PackSegInputs')
 ]
 test_pipeline = [
-    # dict(type='LoadImageFromFile'),
     dict(type='LoadImageFromFile', color_type='grayscale'),
     dict(type='Resize', scale=(640, 480), keep_ratio=True),
     # add loading annotation after ``Resize`` because ground truth
@@ -43,8 +40,6 @@ tta_pipeline = [
         ])
 ]
 train_dataloader = dict(
-    # batch_size=6
-    # num_workers=1, #2,
     batch_size=12,
     num_workers=4,
     persistent_workers=True,
