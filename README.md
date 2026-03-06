@@ -1,107 +1,131 @@
-# Variation-Aware Proxy Segmentation
+# ELSNet: Efficient LWIR Segmentation Network (MMSegmentation-Based)
 
-This repository reproduces and extends the paper:
+This repository contains an ELSNet implementation for long-wave infrared (LWIR) semantic segmentation, built on top of MMSegmentation.
 
-- **Variation-aware proxy learning for semantic segmentation**  
-  (Neurocomputing 659, 2026, Article 131783)
+## Implemented Components
 
-## Installation
+### 1) Backbone: `ELSNet`
+File: `mmseg/models/backbones/elsnet.py`
 
-Installation is the same as MMSegmentation.
+- PID-style backbone structure with detail/semantic/boundary streams.
+- `SDM` (denoising module) before stem.
+- `BEM` (boundary enhancement module) on D-branch stages.
+- Optional `MSFM` (multi-stream feature fusion module).
+- `NNSGenerator` for negative noise sample generation.
+- Wavelet utility paths for denoising training:
+  - `denoise_with_wave`
+  - `raw_wavelet_pack`
+  - `forward_from_denoised`
+- Optional SDM teacher (EMA):
+  - `use_sdm_teacher`
+  - `update_sdm_teacher`
+  - `teacher_denoise_with_wave`
 
-- Please follow: `docs/en/get_started.md#installation`
-- Dataset preparation guide: `docs/en/user_guides/2_dataset_prepare.md#prepare-datasets`
+### 2) Decode Head: `ELSHead`
+File: `mmseg/models/decode_heads/els_head.py`
 
-## Theoretical Summary (from Paper)
+- Multi-branch training outputs:
+  - `p_logit` (P-branch)
+  - `i_logit` (I-branch)
+  - `d_logit` (boundary)
+- BAS threshold control via `bas_threshold`.
+- Computes decode losses:
+  - `loss_sem_p`
+  - `loss_sem_i`
+  - `loss_bd`
+  - `loss_sem_bd`
 
-### 1. Motivation
+### 3) Segmentor: `ELSEncoderDecoder`
+File: `mmseg/models/segmentors/els_encoder_decoder.py`
 
-Single-proxy-per-class methods improve inter-class separation, but they are weak at modeling **intra-class variation** (different appearances within one class). This issue is severe near semantic boundaries and in complex scenes.
+- Extends `EncoderDecoder`.
+- Supports two denoising loss paths:
+  - Classic `IMSELoss` path.
+  - Soft-contrastive wavelet path (`SoftContrastiveWaveletLoss`, Option 5-C).
+- Uses SDM/NNS/teacher wavelet tensors for contrastive denoising when configured.
 
-### 2. Representation Design
+### 4) Losses
+File: `mmseg/models/losses/lwir_losses.py`
 
-For each class `c`, the method learns:
+- `IMSELoss`
+  - Inverse-MSE option in wavelet domain.
+  - Wavelet packing aligned with SDM.
+- `SoftContrastiveWaveletLoss`
+  - Anchor/positive/negative wavelet contrastive formulation.
+  - HF-only option (drop LL).
+- `LowSemanticLoss`
+- `BoundarySemanticLoss` (`hard` / `soft`)
 
-- a **representative proxy** `P_c` (shared class semantics),
-- multiple **variation vectors** `v_{c,i}` (fine-grained intra-class modes).
+### 5) Hook
+File: `mmseg/engine/hooks/sdm_teacher_ema_hook.py`
 
-All embeddings/proxies/vectors are L2-normalized.
+- `SDMTeacherEMAHook` updates SDM teacher by EMA after train iterations.
 
-### 3. Factorized Similarity Score
+### 6) Registry Integration
 
-For a pixel embedding `x`, class `c`, variation index `i`:
+- Backbones: `mmseg/models/backbones/__init__.py`
+- Decode heads: `mmseg/models/decode_heads/__init__.py`
+- Segmentors: `mmseg/models/segmentors/__init__.py`
+- Losses: `mmseg/models/losses/__init__.py`
+- Hooks: `mmseg/engine/hooks/__init__.py`
 
-`s(x, v_{c,i}) = sim(x, P_c) + lambda_var * sim(x, v_{c,i})`
+## Available ELSNet Configs
 
-- `sim` is cosine similarity.
-- Default in paper: `lambda_var = 1.0`, `K_c = 5` variation vectors/class.
+- `configs/elsnet/elsnet-s_2xb6-120k_1024x1024-cityscapes.py`
+  - Cityscapes-style LWIR setup
+  - `IMSELoss` path
+- `configs/elsnet/elsnet-m_2xb6-80k_640x480-soda.py`
+  - SODA setup
+  - `SoftContrastiveWaveletLoss` + `SDMTeacherEMAHook`
 
-This factorization combines global class semantics and local class variation in one score.
+## Dataset Base Configs
 
-### 4. Focal Modulation (Negative-only)
+- `configs/_base_/datasets/lwir_cityscapes_1024x1024.py`
+- `configs/_base_/datasets/soda_640x480.py`
 
-The paper applies focal modulation only on hard negatives:
+## Quick Start
 
-- `p_sub(x, v_{c,i}) = softmax(tau * s(x, v_{c,i}))`
-- `p_neg` is max probability over non-GT class variations.
-- modulation factor: `M_r = (p_neg)^gamma`
+### 1) Environment (example)
 
-Defaults in paper: `tau = 10.0`, `gamma = 2.0`, hard-negative threshold `tau_R = 0.8`.
+Install PyTorch, MMCV, MMEngine, then install this repo:
 
-### 5. Compositional Similarity Loss
+```bash
+pip install -U pip
+pip install -r requirements/runtime.txt
+pip install -r requirements/mminstall.txt
+pip install -e .
+```
 
-The objective has two parts:
+If needed by your pipeline/modules:
 
-- **Attraction loss (`L_a`)**: pulls embeddings toward GT-class variations.
-- **Repulsion loss (`L_r`)**: pushes hard negatives away using `M_r`.
+```bash
+pip install ftfy regex
+```
 
-Combined form:
+### 2) Train
 
-- `L_cs = L_a + lambda_r * L_r`, with default `lambda_r = 1.0`.
-- Final training adds this as auxiliary term to segmentation loss (`lambda_cs` default 1.0 in paper setup).
+```bash
+python tools/train.py configs/elsnet/elsnet-m_2xb6-80k_640x480-soda.py
+```
 
-### 6. Training vs Inference
+or
 
-- The proxy branch is used during **training** to shape embedding space.
-- At **inference**, the base encoder-decoder path is used, so no extra inference-time overhead from the auxiliary proxy-learning branch.
+```bash
+python tools/train.py configs/elsnet/elsnet-s_2xb6-120k_1024x1024-cityscapes.py
+```
 
-## Implemented in This Repo
+### 3) Validate Key Loss Terms
 
-### New Loss
+Expected logs include:
 
-- `mmseg/models/losses/variation_aware_proxy_loss.py`
+- `loss_imse`
+- `decode.loss_sem_p`
+- `decode.loss_sem_i`
+- `decode.loss_bd`
+- `decode.loss_sem_bd`
 
-### New Decode Heads
+## Current Notes
 
-- `mmseg/models/decode_heads/proxy_heads.py`
-- supported heads:
-  - `FCNProxyHead`
-  - `PSPProxyHead`
-  - `ASPPProxyHead`
-  - `DepthwiseSeparableASPPProxyHead`
-  - `LRASPPProxyHead`
-  - `SegformerProxyHead`
-  - `LightHamProxyHead`
-  - `PIDProxyHead`
-
-### Registry Updates
-
-- `mmseg/models/decode_heads/__init__.py`
-- `mmseg/models/losses/__init__.py`
-
-### Added Reproduction Configs
-
-- `configs/varp/hrnet/fcn_hr18_4xb2-40k_cityscapes-512x1024_proxy.py`
-- `configs/varp/mobilenet_v2/mobilenet-v2-d8_fcn_4xb2-80k_cityscapes-512x1024_proxy.py`
-- `configs/varp/mobilenet_v2/mobilenet-v2-d8_pspnet_4xb2-80k_cityscapes-512x1024_proxy.py`
-- `configs/varp/mobilenet_v2/mobilenet-v2-d8_deeplabv3_4xb2-80k_cityscapes-512x1024_proxy.py`
-- `configs/varp/mobilenet_v2/mobilenet-v2-d8_deeplabv3plus_4xb2-80k_cityscapes-512x1024_proxy.py`
-- `configs/varp/mobilenet_v3/mobilenet-v3-d8_lraspp_4xb4-320k_cityscapes-512x1024_proxy.py`
-- `configs/varp/pidnet/pidnet-s_2xb6-120k_1024x1024-cityscapes_proxy.py`
-- `configs/varp/segnext/segnext_mscan-t_1xb16-adamw-160k_ade20k-512x512_proxy.py`
-- `configs/varp/segformer/segformer_mit-b0_8xb1-160k_cityscapes-1024x1024_proxy.py`
-
-## Notes
-
-- This project preserves attribution and licensing obligations of MMSegmentation and the original paper.
-- The current implementation follows the same core principle: **pixel-wise latent supervision** for multi-class semantic segmentation.
+- This repository focuses on ELSNet-specific implementation details.
+- Dataset paths, class metadata, and label mapping should be adjusted to your local dataset.
+- `configs/elsnet/elsnet-s_2xb6-120k_1024x1024-cityscapes.py` currently references `class_weight` in `loss_decode`; ensure `class_weight` is defined or set to `None` before training.
