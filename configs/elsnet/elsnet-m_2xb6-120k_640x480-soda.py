@@ -1,3 +1,5 @@
+# Modifications Copyright (c) 2026 Haejun Bae.
+# Derived from MMSegmentation configuration and licensed under Apache License 2.0.
 _base_ = [
     "../_base_/datasets/soda_640x480.py",
     "../_base_/default_runtime.py",

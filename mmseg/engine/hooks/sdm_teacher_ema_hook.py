@@ -1,3 +1,5 @@
+# Modifications Copyright (c) 2026 Haejun Bae.
+# This file is derived from MMSegmentation and is licensed under Apache License 2.0.
 from mmengine.hooks import Hook
 from mmseg.registry import HOOKS
 

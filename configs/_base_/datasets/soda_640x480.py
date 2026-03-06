@@ -1,3 +1,5 @@
+# Modifications Copyright (c) 2026 Haejun Bae.
+# Derived from MMSegmentation configuration and licensed under Apache License 2.0.
 # dataset settings
 dataset_type = 'SODADataset'
 data_root = 'data/soda/'

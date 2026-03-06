@@ -1,0 +1,14 @@
+ELSNet Repository Notice
+
+This repository is derived in part from MMSegmentation by OpenMMLab.
+Original upstream project: https://github.com/open-mmlab/mmsegmentation
+Upstream license: Apache License 2.0 (see LICENSE).
+
+Modifications in this repository include, but are not limited to:
+- ELSNet backbone integration and updates
+- ELS decode head and segmentor integration
+- LWIR/NNS-related denoising losses and training flow updates
+- SODA dataset integration and related configs
+- SDM teacher EMA hook and training refinements
+
+Modifications Copyright (c) 2026 Haejun Bae.
