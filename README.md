@@ -2,9 +2,10 @@
 
 This is the official repository for the paper:
 
-**Real-Time Long-Wave Infrared Semantic Segmentation With Adaptive Noise Reduction and Feature Fusion**  
+**[Real-Time Long-Wave Infrared Semantic Segmentation With Adaptive Noise Reduction and Feature Fusion](https://doi.org/10.1109/ACCESS.2025.3552782)**  
 (IEEE Access, 2025)
-Paper: [https://doi.org/10.1109/ACCESS.2025.3552782](https://doi.org/10.1109/ACCESS.2025.3552782)
+
+The framework proposed in this work is named **ELSNet**.
 
 ## Overview
 
