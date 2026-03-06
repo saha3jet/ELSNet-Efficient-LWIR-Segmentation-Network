@@ -1,0 +1,66 @@
+{
+  "name": "torch2.4.0-cu121 + mmcv2.2.0 (py3.11, ubuntu22.04)",
+  "build": { "dockerfile": "Dockerfile", "context": ".." },
+  "workspaceFolder": "/workspaces/varseg",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/varseg,type=bind",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  },
+
+  "runArgs": [
+    "--gpus=all",
+    "--ipc=host",
+    "--ulimit","memlock=-1",
+    "--ulimit","stack=67108864"
+  ],
+
+  "postCreateCommand": "python3.11 -m pip install -U pip && \
+python3.11 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 torch==2.4.0 torchvision && \
+python3.11 -m pip install --no-cache-dir -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.4/index.html mmcv==2.2.0 && \
+python3.11 -m pip install --no-cache-dir -r requirements.txt",
+
+  "remoteUser": "root"
+}
+
+
+// {
+//   "name": "torch2.4.0-cu121 + mmcv2.2.0 (py3.11, ubuntu22.04)",
+//   "build": { "dockerfile": "Dockerfile", "context": ".." },
+
+//   "remoteUser": "root",
+//   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+
+//   "mounts": [
+//     "source=torch-${localWorkspaceFolderBasename}-home,target=/home/bhj9876,type=volume",
+//     "source=torch-${localWorkspaceFolderBasename}-pipcache,target=/home/bhj9876/.cache/pip,type=volume",
+//     "source=torch-${localWorkspaceFolderBasename}-torchcache,target=/home/bhj9876/.cache/torch,type=volume",
+//     "source=torch-${localWorkspaceFolderBasename}-hf,target=/home/bhj9876/.cache/huggingface,type=volume",
+//     "source=torch-${localWorkspaceFolderBasename}-data,target=/data,type=volume"
+//   ],
+
+//   "customizations": {
+//     "vscode": {
+//       "extensions": [
+//         "ms-python.python",
+//         "ms-toolsai.jupyter",
+//         "ms-azuretools.vscode-docker"
+//       ]
+//     }
+//   },
+
+//   "runArgs": [
+//     "--gpus=all",
+//     "--ipc=host",
+//     "--ulimit", "memlock=-1",
+//     "--ulimit", "stack=67108864"
+//   ],
+
+//   "postCreateCommand": "python3.11 -m pip install -U pip && python3.11 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 torch==2.4.0 torchvision && python3.11 -m pip install --no-cache-dir -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.4/index.html mmcv==2.2.0 && if [ -f requirements.txt ]; then python3.11 -m pip install --no-cache-dir -r requirements.txt; fi"
+// }

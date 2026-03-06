@@ -1,120 +1,107 @@
-# ELSNet: Efficient LWIR Segmentation Network
+# Variation-Aware Proxy Segmentation
 
-This repository contains the ELSNet implementation for long-wave infrared semantic segmentation.
+This repository reproduces and extends the paper:
 
-Codebase note: this project is built on top of the MMSegmentation framework, but this README focuses on ELSNet-specific implementation and usage.
+- **Variation-aware proxy learning for semantic segmentation**  
+  (Neurocomputing 659, 2026, Article 131783)
 
-## Project Scope
+## Installation
 
-- Goal: real-time LWIR semantic segmentation with denoising and boundary-aware fusion.
-- Core idea: integrate SDM, BEM, MSFM, and multi-term losses into a PID-style architecture.
-- Current naming: ELSNet / ELSHead / ELSEncoderDecoder.
+Installation is the same as MMSegmentation.
 
-## Current Implementation Status
+- Please follow: `docs/en/get_started.md#installation`
+- Dataset preparation guide: `docs/en/user_guides/2_dataset_prepare.md#prepare-datasets`
 
-### Implemented
+## Theoretical Summary (from Paper)
 
-- Backbone: `mmseg/models/backbones/elsnet.py`
-  - SDM before stem.
-  - BEM on D-branch stages.
-  - Optional MSFM integration.
-  - NNS generator and `generate_nns()`.
-  - `forward_from_denoised()` for training orchestration.
-- Decode head: `mmseg/models/decode_heads/els_head.py`
-  - PID-style multi-branch output flow with ELS naming.
-  - BAS threshold is configurable via `bas_threshold`.
-- Segmentor: `mmseg/models/segmentors/els_encoder_decoder.py`
-  - Extends EncoderDecoder and adds `loss_imse` orchestration.
-  - Reuses optional wavelet coefficients from backbone when available.
-- Losses: `mmseg/models/losses/lwir_losses.py`
-  - `IMSELoss` (supports inverse wavelet-domain mode).
-  - `IMSELoss` options: `per_channel`, `inverse_transform`, `inverse_clip_max`.
-  - `LowSemanticLoss`.
-  - `BoundarySemanticLoss` (`hard` and `soft` modes).
-- Registry wiring completed:
-  - `mmseg/models/backbones/__init__.py`
-  - `mmseg/models/decode_heads/__init__.py`
-  - `mmseg/models/segmentors/__init__.py`
-  - `mmseg/models/losses/__init__.py`
-- Configs:
-  - Main: `configs/elsnet/elsnet-s_2xb6-120k_1024x1024-cityscapes.py`
-  - Dataset base: `configs/_base_/datasets/lwir_cityscapes_1024x1024.py`
+### 1. Motivation
 
-### In Progress / Next
+Single-proxy-per-class methods improve inter-class separation, but they are weak at modeling **intra-class variation** (different appearances within one class). This issue is severe near semantic boundaries and in complex scenes.
 
-- Dataset-finalization for the actual LWIR dataset:
-  - `data_root`, class meta, label mapping, edge map validation.
-- Runtime verification:
-  - 1-iter smoke train (loss keys, finite checks).
-  - tiny-subset overfit sanity check.
-- Training recipe tuning:
-  - lambda balancing for `loss_imse`, `loss_sem_p`, `loss_sem_i`, `loss_bd`, `loss_sem_bd`.
+### 2. Representation Design
 
-## Architecture Summary
+For each class `c`, the method learns:
 
-- Input: 1-channel LWIR image.
-- Backbone flow:
-  - SDM denoises input.
-  - PID-style branches process semantic/detail/boundary streams.
-  - BEM strengthens boundary stream.
-  - MSFM fuses multi-stream information.
-- Head:
-  - ELSHead outputs `p_logit`, `i_logit`, `d_logit` during training.
-- Segmentor-level loss orchestration:
-  - ELSEncoderDecoder computes decode losses and additional `loss_imse`.
-  - If available, `denoise_with_wave()` is used to avoid recomputing wavelet features for iMSE.
+- a **representative proxy** `P_c` (shared class semantics),
+- multiple **variation vectors** `v_{c,i}` (fine-grained intra-class modes).
 
-## Loss Composition
+All embeddings/proxies/vectors are L2-normalized.
 
-- Segmentation/decode side:
-  - `decode.loss_sem_p`
-  - `decode.loss_sem_i`
-  - `decode.loss_bd`
-  - `decode.loss_sem_bd`
-- Denoising side:
-  - `loss_imse`
+### 3. Factorized Similarity Score
 
-`IMSELoss` supports inverse wavelet-domain form:
+For a pixel embedding `x`, class `c`, variation index `i`:
 
-- `L_iMSE = 1 / (MSE(W_d, W_n) + eps)`
+`s(x, v_{c,i}) = sim(x, P_c) + lambda_var * sim(x, v_{c,i})`
 
-where `W_d` and `W_n` are Haar-wavelet coefficients of denoised and NNS samples.
+- `sim` is cosine similarity.
+- Default in paper: `lambda_var = 1.0`, `K_c = 5` variation vectors/class.
 
-Current default config uses OHEM for BAS-equivalent supervision in the 4th decode loss slot (same pattern as PID config family).
+This factorization combines global class semantics and local class variation in one score.
 
-## Quick Start
+### 4. Focal Modulation (Negative-only)
 
-### 1) Environment
+The paper applies focal modulation only on hard negatives:
 
-Install required runtime packages first (`torch`, `mmengine`, `mmcv`, and project requirements).
+- `p_sub(x, v_{c,i}) = softmax(tau * s(x, v_{c,i}))`
+- `p_neg` is max probability over non-GT class variations.
+- modulation factor: `M_r = (p_neg)^gamma`
 
-### 2) Smoke Train (1 Iteration)
+Defaults in paper: `tau = 10.0`, `gamma = 2.0`, hard-negative threshold `tau_R = 0.8`.
 
-```bash
-python tools/train.py configs/elsnet/elsnet-s_2xb6-120k_1024x1024-cityscapes.py --cfg-options train_cfg.max_iters=1 train_cfg.val_interval=1
-```
+### 5. Compositional Similarity Loss
 
-### 3) Validate Loss Keys
+The objective has two parts:
 
-Check logs for:
+- **Attraction loss (`L_a`)**: pulls embeddings toward GT-class variations.
+- **Repulsion loss (`L_r`)**: pushes hard negatives away using `M_r`.
 
-- `loss_imse`
-- `decode.loss_sem_p`
-- `decode.loss_sem_i`
-- `decode.loss_bd`
-- `decode.loss_sem_bd`
+Combined form:
 
-## Repository Pointers
+- `L_cs = L_a + lambda_r * L_r`, with default `lambda_r = 1.0`.
+- Final training adds this as auxiliary term to segmentation loss (`lambda_cs` default 1.0 in paper setup).
 
-- ELSNet backbone: `mmseg/models/backbones/elsnet.py`
-- ELSHead: `mmseg/models/decode_heads/els_head.py`
-- ELS segmentor: `mmseg/models/segmentors/els_encoder_decoder.py`
-- LWIR losses: `mmseg/models/losses/lwir_losses.py`
-- Main config: `configs/elsnet/elsnet-s_2xb6-120k_1024x1024-cityscapes.py`
-- Dataset base config: `configs/_base_/datasets/lwir_cityscapes_1024x1024.py`
-- Additional summary: `docs/ELSNET_REPO_SUMMARY.md`
+### 6. Training vs Inference
+
+- The proxy branch is used during **training** to shape embedding space.
+- At **inference**, the base encoder-decoder path is used, so no extra inference-time overhead from the auxiliary proxy-learning branch.
+
+## Implemented in This Repo
+
+### New Loss
+
+- `mmseg/models/losses/variation_aware_proxy_loss.py`
+
+### New Decode Heads
+
+- `mmseg/models/decode_heads/proxy_heads.py`
+- supported heads:
+  - `FCNProxyHead`
+  - `PSPProxyHead`
+  - `ASPPProxyHead`
+  - `DepthwiseSeparableASPPProxyHead`
+  - `LRASPPProxyHead`
+  - `SegformerProxyHead`
+  - `LightHamProxyHead`
+  - `PIDProxyHead`
+
+### Registry Updates
+
+- `mmseg/models/decode_heads/__init__.py`
+- `mmseg/models/losses/__init__.py`
+
+### Added Reproduction Configs
+
+- `configs/varp/hrnet/fcn_hr18_4xb2-40k_cityscapes-512x1024_proxy.py`
+- `configs/varp/mobilenet_v2/mobilenet-v2-d8_fcn_4xb2-80k_cityscapes-512x1024_proxy.py`
+- `configs/varp/mobilenet_v2/mobilenet-v2-d8_pspnet_4xb2-80k_cityscapes-512x1024_proxy.py`
+- `configs/varp/mobilenet_v2/mobilenet-v2-d8_deeplabv3_4xb2-80k_cityscapes-512x1024_proxy.py`
+- `configs/varp/mobilenet_v2/mobilenet-v2-d8_deeplabv3plus_4xb2-80k_cityscapes-512x1024_proxy.py`
+- `configs/varp/mobilenet_v3/mobilenet-v3-d8_lraspp_4xb4-320k_cityscapes-512x1024_proxy.py`
+- `configs/varp/pidnet/pidnet-s_2xb6-120k_1024x1024-cityscapes_proxy.py`
+- `configs/varp/segnext/segnext_mscan-t_1xb16-adamw-160k_ade20k-512x512_proxy.py`
+- `configs/varp/segformer/segformer_mit-b0_8xb1-160k_cityscapes-1024x1024_proxy.py`
 
 ## Notes
 
-- This README intentionally excludes generic MMSegmentation model-zoo/tutorial content.
-- For framework internals, use upstream MMSegmentation docs as reference.
+- This project preserves attribution and licensing obligations of MMSegmentation and the original paper.
+- The current implementation follows the same core principle: **pixel-wise latent supervision** for multi-class semantic segmentation.

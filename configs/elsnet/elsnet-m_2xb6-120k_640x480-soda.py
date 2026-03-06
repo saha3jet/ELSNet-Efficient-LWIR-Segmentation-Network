@@ -2,7 +2,7 @@ _base_ = [
     "../_base_/datasets/soda_640x480.py",
     "../_base_/default_runtime.py",
 ]
-checkpoint_file = '/workspaces/torch-dev/elsnet-m_imagenet1k.pth'
+load_from = None
 crop_size = (480, 640) #(640, 480)
 data_preprocessor = dict(
     type="SegDataPreProcessor",
@@ -94,7 +94,8 @@ model = dict(
     test_cfg=dict(mode="whole"),
 )
 
-iters = 120000
+# iters = 120000
+iters = 60000
 optimizer = dict(type="SGD", lr=0.01, momentum=0.9, weight_decay=0.0005)
 optim_wrapper = dict(type="OptimWrapper", optimizer=optimizer, clip_grad=None)
 

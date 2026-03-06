@@ -108,7 +108,6 @@ venv.bak/
 data
 .vscode
 .idea
-work_dirs
 
 # custom
 *.pkl
@@ -119,12 +118,3 @@ mmseg/.mim
 
 # Pytorch
 *.pth
-
-# local artifacts / large files
-result.jpg
-pspnet_r50-d8_4xb2-40k_cityscapes-512x1024.py
-pspnet_r50-d8_512x1024_40k_cityscapes_20200605_003338-2966598c.pth
-.devcontainer/
-analyze_train_logs.py
-soda.py
-weight_check.py
